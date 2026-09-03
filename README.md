@@ -130,6 +130,17 @@ scripts/train_sft.sh
 
 继续训练已有 adapter 时，通过 `INIT_ADAPTER` 指定路径，并为每次实验设置新的 `RUN_NAME`，避免覆盖历史结果。
 
+使用固定 Test 全集公平评测 Base 和 SFT adapter：
+
+```bash
+EVAL_LABEL=base-test439 OUTPUT_FILE=artifacts/eval/base-test439/metrics.json scripts/eval_sft.sh
+
+EVAL_LABEL=sft-test439 \
+EVAL_ADAPTER=/path/to/checkpoint-300 \
+OUTPUT_FILE=artifacts/eval/sft-test439/metrics.json \
+scripts/eval_sft.sh
+```
+
 ## GRPO 训练
 
 先运行确定性生成检查：
