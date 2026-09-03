@@ -41,6 +41,7 @@ exec "${LAUNCHER[@]}" \
   --max_image_side "${MAX_IMAGE_SIDE:-448}" \
   --val_ratio "${VAL_RATIO:-0.1}" \
   --test_ratio "${TEST_RATIO:-0.1}" \
+  --split_manifest "${SPLIT_MANIFEST:-${PROJECT_ROOT}/configs/splits/cagui-domestic-seed42-v1.json}" \
   --max_eval_samples "${MAX_EVAL_SAMPLES:-256}" \
   --max_test_samples "${MAX_TEST_SAMPLES:-256}" \
   --eval_steps "${EVAL_STEPS:-10}" \

@@ -228,6 +228,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val_ratio", type=float, default=0.1)
     parser.add_argument("--test_ratio", type=float, default=0.1)
+    parser.add_argument(
+        "--split_manifest",
+        default=os.environ.get("SPLIT_MANIFEST", ""),
+        help="Versioned episode split manifest. When set, it overrides val/test ratios and validates dataset membership.",
+    )
     parser.add_argument("--max_eval_samples", type=int, default=256)
     parser.add_argument("--max_test_samples", type=int, default=256)
     parser.add_argument("--eval_steps", type=int, default=100)
@@ -315,6 +320,83 @@ def split_by_episode(
     return CaguiListDataset(train_samples), CaguiListDataset(val_samples), CaguiListDataset(test_samples)
 
 
+def split_from_manifest(
+    dataset: CaguiEpisodeDataset,
+    manifest_path: str | Path,
+    expected_dataset_split: str,
+) -> tuple[CaguiListDataset, CaguiListDataset, CaguiListDataset, dict[str, Any]]:
+    path = Path(manifest_path).expanduser().resolve()
+    with path.open("r", encoding="utf-8") as file:
+        manifest = json.load(file)
+
+    if manifest.get("manifest_version") != 1:
+        raise ValueError(f"Unsupported split manifest version in {path}: {manifest.get('manifest_version')!r}")
+    if manifest.get("dataset_split") != expected_dataset_split:
+        raise ValueError(
+            f"Split manifest targets {manifest.get('dataset_split')!r}, but --split is {expected_dataset_split!r}"
+        )
+
+    partition_names = ("train", "validation", "test")
+    partition_ids: dict[str, list[str]] = {}
+    for name in partition_names:
+        partition = manifest.get(name)
+        if not isinstance(partition, dict) or not isinstance(partition.get("episode_ids"), list):
+            raise ValueError(f"Split manifest {path} has no valid {name}.episode_ids list")
+        ids = [str(episode_id) for episode_id in partition["episode_ids"]]
+        if len(ids) != len(set(ids)):
+            raise ValueError(f"Split manifest {path} contains duplicate episode IDs in {name}")
+        if partition.get("episode_count") != len(ids):
+            raise ValueError(f"Split manifest {path} has an incorrect {name}.episode_count")
+        partition_ids[name] = ids
+
+    id_sets = {name: set(ids) for name, ids in partition_ids.items()}
+    for left_idx, left in enumerate(partition_names):
+        for right in partition_names[left_idx + 1 :]:
+            overlap = id_sets[left] & id_sets[right]
+            if overlap:
+                raise ValueError(f"Split manifest {path} overlaps {left}/{right}: {sorted(overlap)[:5]}")
+
+    samples = list(dataset.samples)
+    actual_ids = {str(sample.episode_id) for sample in samples}
+    manifest_ids = set().union(*(id_sets[name] for name in partition_names))
+    missing = manifest_ids - actual_ids
+    unexpected = actual_ids - manifest_ids
+    if missing or unexpected:
+        raise ValueError(
+            f"Dataset does not match split manifest {path}: "
+            f"missing={sorted(missing)[:5]}, unexpected={sorted(unexpected)[:5]}"
+        )
+
+    full = manifest.get("full", {})
+    if full.get("episode_count") != len(actual_ids) or full.get("sample_count") != len(samples):
+        raise ValueError(
+            f"Dataset counts do not match split manifest {path}: "
+            f"episodes={len(actual_ids)}, samples={len(samples)}"
+        )
+
+    split_samples: dict[str, list[Any]] = {name: [] for name in partition_names}
+    episode_to_partition = {
+        episode_id: name for name in partition_names for episode_id in partition_ids[name]
+    }
+    for sample in samples:
+        split_samples[episode_to_partition[str(sample.episode_id)]].append(sample)
+
+    for name in partition_names:
+        declared_count = manifest[name].get("sample_count")
+        if declared_count != len(split_samples[name]):
+            raise ValueError(
+                f"Dataset sample count for {name} does not match split manifest {path}: "
+                f"expected={declared_count}, actual={len(split_samples[name])}"
+            )
+
+    return (
+        CaguiListDataset(split_samples["train"]),
+        CaguiListDataset(split_samples["validation"]),
+        CaguiListDataset(split_samples["test"]),
+        manifest,
+    )
+
+
 def save_split_manifest(
     args: argparse.Namespace,
     full_dataset: CaguiEpisodeDataset,
@@ -346,6 +428,13 @@ def save_split_manifest(
         "validation": partition(val_dataset),
         "test": partition(test_dataset),
     }
+    manifest_path = Path(args.output_dir) / "split_manifest.json"
+    with manifest_path.open("w", encoding="utf-8") as file:
+        json.dump(manifest, file, ensure_ascii=False, indent=2, sort_keys=True)
+    return manifest_path
+
+
+def save_fixed_split_manifest(args: argparse.Namespace, manifest: dict[str, Any]) -> Path:
     manifest_path = Path(args.output_dir) / "split_manifest.json"
     with manifest_path.open("w", encoding="utf-8") as file:
         json.dump(manifest, file, ensure_ascii=False, indent=2, sort_keys=True)
@@ -564,21 +653,32 @@ def main() -> None:
     torch.manual_seed(args.seed)
 
     full_dataset = CaguiEpisodeDataset(args.dataset_dir, args.split, args.history_window, args.max_episodes)
-    train_dataset, raw_val_dataset, raw_test_dataset = split_by_episode(
-        full_dataset,
-        args.val_ratio,
-        args.test_ratio,
-        args.seed,
-    )
+    fixed_manifest: dict[str, Any] | None = None
+    if args.split_manifest:
+        train_dataset, raw_val_dataset, raw_test_dataset, fixed_manifest = split_from_manifest(
+            full_dataset,
+            args.split_manifest,
+            args.split,
+        )
+    else:
+        train_dataset, raw_val_dataset, raw_test_dataset = split_by_episode(
+            full_dataset,
+            args.val_ratio,
+            args.test_ratio,
+            args.seed,
+        )
     split_manifest_path = Path(args.output_dir) / "split_manifest.json"
     if is_primary_process:
-        split_manifest_path = save_split_manifest(
-            args,
-            full_dataset,
-            train_dataset,
-            raw_val_dataset,
-            raw_test_dataset,
-        )
+        if fixed_manifest is not None:
+            split_manifest_path = save_fixed_split_manifest(args, fixed_manifest)
+        else:
+            split_manifest_path = save_split_manifest(
+                args,
+                full_dataset,
+                train_dataset,
+                raw_val_dataset,
+                raw_test_dataset,
+            )
     eval_dataset = limit_dataset(raw_val_dataset, args.max_eval_samples)
     test_dataset = limit_dataset(raw_test_dataset, args.max_test_samples)
     print(f"loaded {len(full_dataset)} CAGUI bridge SFT samples", flush=True)

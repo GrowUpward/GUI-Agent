@@ -51,7 +51,9 @@
 | Validation | 10% | 60 | 训练过程评估与 checkpoint 选择 |
 | Test | 10% | 60 | 最终生成评测 |
 
-每次运行在输出目录保存 `split_manifest.json`，其中记录三个分区的 episode ID、样本数、随机种子和坐标约定。最终实验必须复用同一 manifest。
+本实验的标准划分已固化为 `configs/splits/cagui-domestic-seed42-v1.json`，其中明确记录 480/60/60 个 episode ID、各分区样本数、随机种子和坐标约定。`scripts/train_sft.sh` 默认读取该文件，并在启动时校验 episode 集合及样本数；数据发生增删或分区重叠时直接报错。每次运行仍会把实际使用的 manifest 复制到输出目录，作为运行证据。
+
+当前双卡正式运行生成的划分与该标准文件一致，因此无需中断或重启。训练过程可截取 Validation 的前 256 条以控制耗时，但最终结果必须在完整 Validation 457 条和 Test 439 条上单独评测。
 
 ## 6. 坐标约定
 

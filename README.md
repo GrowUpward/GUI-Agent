@@ -116,6 +116,8 @@ scripts/doctor.sh --strict --demo
 
 ## SFT 训练
 
+SFT 默认使用仓库内版本化的 `configs/splits/cagui-domestic-seed42-v1.json`，固定 CAGUI domestic 的 480/60/60 episode 划分。启动时会校验数据集是否与 manifest 一致；如需开展新的划分实验，应通过 `SPLIT_MANIFEST` 显式指定另一份版本化文件。
+
 ```bash
 RUN_NAME=sft-cagui-$(date +%Y%m%d-%H%M) \
 MAX_STEPS=300 \
