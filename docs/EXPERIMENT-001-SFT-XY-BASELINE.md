@@ -2,7 +2,7 @@
 
 ## 1. 实验状态
 
-- 状态：10-step BF16 训练与 checkpoint 保存已通过，最终测试生成进行中
+- 状态：10-step BF16 冒烟实验已通过；300-step 正式 baseline 运行中
 - 优先级：P0
 - 训练阶段：SFT
 - 后续阶段：只有 SFT baseline 可信且优于基座模型后，才进入 GRPO
@@ -126,7 +126,9 @@ artifacts/train/sft-xy-smoke-20260903-095014
 artifacts/train/sft-xy-smoke-bf16-20260903-095315
 ```
 
-10 个训练 step 已完成：第 10 step 的 loss 为 0.8629、梯度范数为 2.19，最终验证 loss 为 0.8632，`checkpoint-10` 已正常保存，未出现 NaN 或 OOM。batch size 1 时 GPU 峰值显存约 23.8 GB，接近单卡 24 GB 上限。最终是否完整通过，还需等待 25 条测试样本的生成评测和根目录 adapter 保存完成。
+10 个训练 step 已完成：第 10 step 的 loss 为 0.8629、梯度范数为 2.19，最终验证 loss 为 0.8632，`checkpoint-10` 和根目录 adapter 均已正常保存，未出现 NaN 或 OOM。batch size 1 时 GPU 峰值显存约 23.8 GB，接近单卡 24 GB 上限。
+
+25 条测试样本的短程结果为：格式解析率 100%、动作类型准确率 80%、点击命中率 5%、平均点击距离 489.70、文本输入完全匹配率 0%、平均奖励 0.2894。模型把 25 条样本全部预测成点击动作，说明 10 step 只验证了工程链路，不能证明模型效果。
 
 ## 9. 阶段 B：300-step 正式 Baseline
 
@@ -145,6 +147,22 @@ artifacts/train/sft-xy-smoke-bf16-20260903-095315
 | 最大图像边长 | 448 |
 
 正式训练前必须先使用固定测试集评测未微调基座模型，从而建立真正可比较的 Base 指标。
+
+正式运行已启动：
+
+```text
+运行目录：artifacts/train/sft-xy-baseline-bf16-20260903-095945
+进程 PID：1313029
+训练集：480 episodes / 3,620 steps
+原始验证集：60 episodes / 457 steps
+原始测试集：60 episodes / 439 steps
+训练步数：300
+batch size：1
+梯度累积：8
+精度：BF16 + 4-bit NF4
+```
+
+第 1 step 的 loss 为 0.9006、梯度范数为 8.00，进程状态正常。训练期间的验证和训练结束时的在线生成评测暂时各限制为 256 条样本；最终报告前仍需基于 manifest 对完整 60-episode 测试集运行独立评测，并补齐未微调 Base 结果。
 
 ## 10. 评测指标
 
