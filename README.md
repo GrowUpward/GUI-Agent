@@ -28,6 +28,8 @@
 
 GRPO 训练代码和短程 checkpoint 已存在，但目前还没有完成严格控制变量的 SFT 与 SFT+GRPO 对比，暂不能声称 GRPO 带来了稳定提升。详细记录见 [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md)。
 
+当前坐标修正版 SFT baseline 的完整实验方案见 [`docs/EXPERIMENT-001-SFT-XY-BASELINE.md`](docs/EXPERIMENT-001-SFT-XY-BASELINE.md)。
+
 ## 本仓库的主要工作
 
 - 将 Qwen3.5-0.8B 适配到 GUI 动作预测任务，并支持 LoRA/QLoRA；

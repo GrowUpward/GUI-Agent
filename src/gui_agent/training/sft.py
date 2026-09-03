@@ -314,6 +314,43 @@ def split_by_episode(
     return CaguiListDataset(train_samples), CaguiListDataset(val_samples), CaguiListDataset(test_samples)
 
 
+def save_split_manifest(
+    args: argparse.Namespace,
+    full_dataset: CaguiEpisodeDataset,
+    train_dataset: CaguiListDataset,
+    val_dataset: CaguiListDataset,
+    test_dataset: CaguiListDataset,
+) -> Path:
+    def partition(dataset: CaguiListDataset) -> dict[str, Any]:
+        episode_ids = sorted({str(sample.episode_id) for sample in dataset.samples})
+        return {
+            "episode_count": len(episode_ids),
+            "sample_count": len(dataset),
+            "episode_ids": episode_ids,
+        }
+
+    manifest = {
+        "dataset_dir": str(Path(args.dataset_dir).expanduser().resolve()),
+        "dataset_split": args.split,
+        "coordinate_convention": "model_and_api_use_normalized_xy_0_1000; source_cagui_uses_yx",
+        "seed": args.seed,
+        "val_ratio": args.val_ratio,
+        "test_ratio": args.test_ratio,
+        "max_episodes": args.max_episodes,
+        "full": {
+            "episode_count": len({str(sample.episode_id) for sample in full_dataset.samples}),
+            "sample_count": len(full_dataset),
+        },
+        "train": partition(train_dataset),
+        "validation": partition(val_dataset),
+        "test": partition(test_dataset),
+    }
+    manifest_path = Path(args.output_dir) / "split_manifest.json"
+    with manifest_path.open("w", encoding="utf-8") as file:
+        json.dump(manifest, file, ensure_ascii=False, indent=2, sort_keys=True)
+    return manifest_path
+
+
 def limit_dataset(dataset: CaguiListDataset, limit: int) -> CaguiListDataset:
     if limit <= 0 or len(dataset) <= limit:
         return dataset
@@ -529,6 +566,13 @@ def main() -> None:
         args.test_ratio,
         args.seed,
     )
+    split_manifest_path = save_split_manifest(
+        args,
+        full_dataset,
+        train_dataset,
+        raw_val_dataset,
+        raw_test_dataset,
+    )
     eval_dataset = limit_dataset(raw_val_dataset, args.max_eval_samples)
     test_dataset = limit_dataset(raw_test_dataset, args.max_test_samples)
     print(f"loaded {len(full_dataset)} CAGUI bridge SFT samples", flush=True)
@@ -543,6 +587,7 @@ def main() -> None:
                     "raw_test": dataset_distribution(raw_test_dataset),
                     "val_ratio": args.val_ratio,
                     "test_ratio": args.test_ratio,
+                    "split_manifest": str(split_manifest_path),
                 }
             },
             ensure_ascii=False,
