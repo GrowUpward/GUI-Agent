@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gui-agent-qwen35"
+version = "0.1.0"
+description = "A resource-efficient Qwen3.5 GUI agent for CAGUI training and mobile execution."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "zhaozhiqing"}]
+dependencies = [
+  "accelerate>=1.14,<2",
+  "bitsandbytes>=0.49,<1",
+  "peft>=0.19,<1",
+  "Pillow>=10,<13",
+  "torch>=2.6,<3",
+  "tqdm>=4.66,<5",
+  "transformers>=5.6,<6",
+]
+
+[project.optional-dependencies]
+demo = [
+  "fastapi>=0.115,<1",
+  "gradio>=5,<7",
+  "pydantic>=2,<3",
+  "uvicorn>=0.34,<1",
+]
+dev = [
+  "pytest>=8,<10",
+  "ruff>=0.12,<1",
+]
+
+[project.scripts]
+gui-agent-doctor = "gui_agent.doctor:main"
+gui-agent-inspect-cagui = "gui_agent.data.inspect_cagui:main"
+gui-agent-train-sft = "gui_agent.training.sft:main"
+gui-agent-train-grpo = "gui_agent.training.grpo:main"
+gui-agent-serve = "gui_agent.deployment.model_server:main"
+gui-agent-adb = "gui_agent.deployment.adb_controller:main"
+gui-agent-gradio = "gui_agent.deployment.gradio_app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]

@@ -1,0 +1,11 @@
+GUI-Agent-Qwen3.5
+
+This repository contains code adapted from the UI-R1 project:
+https://github.com/lll6gg/UI-R1
+
+UI-R1 is licensed under the Apache License 2.0. The original paper is:
+"UI-R1: Enhancing Efficient Action Prediction of GUI Agents by Reinforcement Learning",
+Proceedings of AAAI 2026, DOI: 10.1609/aaai.v40i21.38816.
+
+The CAGUI adaptation, Qwen3.5 training pipeline, evaluation extensions, and
+repository reorganization are maintained separately in this repository.

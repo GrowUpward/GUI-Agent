@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local configuration
+.env
+configs/local.env
+
+# Data, models, caches, and generated artifacts
+/data/
+/datasets/
+/artifacts/
+/checkpoints/
+/ckpt/
+/results/
+/outputs/
+/logs/
+/wandb/
+/mobile_debug/
+*.log
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.parquet
+*.arrow
+*.png
+*.jpg
+*.jpeg
+
+# Keep small test fixtures when intentionally committed
+!tests/fixtures/**
