@@ -2,7 +2,7 @@
 
 ## 1. 实验状态
 
-- 状态：准备启动 10-step 冒烟实验
+- 状态：10-step BF16 训练与 checkpoint 保存已通过，最终测试生成进行中
 - 优先级：P0
 - 训练阶段：SFT
 - 后续阶段：只有 SFT baseline 可信且优于基座模型后，才进入 GRPO
@@ -73,7 +73,7 @@
 - 历史窗口：4；
 - 最大候选 UI 框数：30；
 - 注意力实现：SDPA；
-- 数值精度：FP16。服务器 GPU 为 Quadro RTX 6000（Turing），不使用 BF16。
+- 数值精度：BF16。虽然服务器 GPU 为 Quadro RTX 6000（Turing），当前 PyTorch/CUDA 环境的 `torch.cuda.is_bf16_supported()` 返回 `True`，并且 BF16 探针梯度稳定；因此以实际环境检测和探针结果为准。
 
 ## 8. 阶段 A：10-step 冒烟实验
 
@@ -93,7 +93,7 @@
 启动命令：
 
 ```bash
-BF16=0 FP16=1 INIT_ADAPTER= \
+BF16=1 FP16=0 INIT_ADAPTER= \
 RUN_NAME=sft-xy-smoke-$(date +%Y%m%d-%H%M) \
 MAX_EPISODES=30 MAX_STEPS=10 \
 SAVE_STEPS=10 EVAL_STEPS=10 \
@@ -110,6 +110,24 @@ scripts/train_sft.sh
 - 输出格式可被动作解析器读取；
 - 随机抽样确认目标坐标方向正确。
 
+### 已执行探针
+
+第一次尝试使用 FP16，运行目录为：
+
+```text
+artifacts/train/sft-xy-smoke-20260903-095014
+```
+
+第 1 和第 5 step 均出现 `grad_norm=NaN`，loss scaler 跳过了有效更新，因此该运行被终止并保留为失败记录，不能用于模型效果判断。
+
+第二次改用 BF16，运行目录为：
+
+```text
+artifacts/train/sft-xy-smoke-bf16-20260903-095315
+```
+
+10 个训练 step 已完成：第 10 step 的 loss 为 0.8629、梯度范数为 2.19，最终验证 loss 为 0.8632，`checkpoint-10` 已正常保存，未出现 NaN 或 OOM。batch size 1 时 GPU 峰值显存约 23.8 GB，接近单卡 24 GB 上限。最终是否完整通过，还需等待 25 条测试样本的生成评测和根目录 adapter 保存完成。
+
 ## 9. 阶段 B：300-step 正式 Baseline
 
 只有阶段 A 通过后才启动。建议参数：
@@ -118,8 +136,8 @@ scripts/train_sft.sh
 | --- | ---: |
 | Episode | 全部 600 |
 | 最大训练步数 | 300 |
-| 单卡 batch size | 2 |
-| 梯度累积 | 4 |
+| 单卡 batch size | 1 |
+| 梯度累积 | 8 |
 | 有效 batch size | 8 |
 | 学习率 | 1e-4 |
 | 保存间隔 | 100 |
