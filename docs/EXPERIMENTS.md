@@ -1,65 +1,76 @@
-# Experiment status
+# 实验状态
 
-## Dataset snapshot
+## 1. 数据集快照
 
-The recorded CAGUI domestic split contains 600 episodes and 4,516 steps:
+当前记录的 CAGUI `domestic` 划分包含 600 个 episode、4,516 个 step：
 
-| Action | Count |
+| 动作 | 数量 |
 | --- | ---: |
-| click | 3,237 |
-| input_text | 574 |
-| stop | 575 |
-| scroll | 79 |
-| wait | 25 |
-| impossible | 25 |
-| unknown | 1 |
+| 点击 | 3,237 |
+| 输入文本 | 574 |
+| 任务完成 | 575 |
+| 滑动 | 79 |
+| 等待 | 25 |
+| 任务无法完成 | 25 |
+| 未知 | 1 |
 
-Click accounts for roughly 71.7% of the data. Always report per-action metrics alongside overall accuracy.
+点击动作约占全部数据的 71.7%。报告模型效果时，必须同时给出各动作类别指标，不能只展示整体准确率。
 
-## Archived SFT result
+## 2. 历史 SFT 结果
 
-Source artifact in the original workspace:
+原始工作区中的模型产物：
 
 ```text
 /data/data1/zhaozhiqing/project/UI-R1/results/train/
 continue_sft_qwen35_0.8b_cagui_agent_base_lora/lr_1e_4_plus300
 ```
 
-Fixed 128-sample generation test:
+固定 128 条样本的生成评测结果：
 
-| Metric | Result |
+| 指标 | 结果 |
 | --- | ---: |
 | Eval loss | 0.5730 |
-| Parse success | 0.8828 |
-| Action-type accuracy | 0.7344 |
-| Argument accuracy | 0.0938 |
-| Click hit rate | 0.1613 |
-| Mean click distance | 275.1046 |
-| Input-text exact match | 0.4375 |
-| Mean reward | 0.3317 |
+| 解析成功率 | 0.8828 |
+| 动作类型准确率 | 0.7344 |
+| 参数准确率 | 0.0938 |
+| 点击命中率 | 0.1613 |
+| 平均点击距离 | 275.1046 |
+| 输入文本完全匹配率 | 0.4375 |
+| 平均奖励 | 0.3317 |
 
-Compared with its `lr_1e_4` parent experiment, continued training improved action accuracy by 3.13 percentage points, click hit rate by 5.38 points, and reduced mean click distance by approximately 39%. Parse success fell by 4.69 points, so the change is a trade-off rather than an unqualified improvement.
+与其父实验 `lr_1e_4` 相比，继续训练使动作准确率提高 3.13 个百分点、点击命中率提高 5.38 个百分点，平均点击距离下降约 39%；但解析成功率下降了 4.69 个百分点。因此这是一个存在取舍的结果，不能描述为全面提升。
 
-### Coordinate-order audit
+## 3. 坐标顺序审计
 
-During repository cleanup, the active loader was found to pass CAGUI's normalized `[y, x]` fields directly into an action schema documented as `[x, y]`. The new repository fixes that conversion and includes a regression test. Consequently:
+整理仓库时发现，旧版数据加载器将 CAGUI 的归一化 `[y, x]` 直接传给了文档定义为 `[x, y]` 的动作字段。新仓库已经修复该转换并增加回归测试。
 
-- parse success, action-type accuracy, and input-text exact match remain useful historical evidence;
-- argument reward, target-box hit rate, and end-to-end click behavior require a corrected baseline rerun;
-- the archived adapter can still be demoed with `LEGACY_YX_OUTPUT=1`, which swaps its predicted coordinate before ADB execution;
-- new SFT and GRPO runs must use the corrected default and must not enable the legacy flag.
+这一问题意味着：
 
-This distinction should be disclosed in résumés and interviews rather than presenting the archived coordinate metrics as a final result.
+- 解析成功率、动作类型准确率和输入文本完全匹配率仍可作为历史参考；
+- 参数奖励、目标框命中率和端到端点击效果必须用修正后的流程重新评测；
+- 演示旧 adapter 时，可设置 `LEGACY_YX_OUTPUT=1`，在 ADB 执行前交换模型预测坐标；
+- 新的 SFT 和 GRPO 实验必须使用修正后的默认设置，不能启用旧坐标兼容开关。
 
-## GRPO status
+简历和面试中应主动说明这个区别，不能把历史坐标指标包装成最终有效结果。发现、定位并修复训练数据语义问题，本身也是该项目工程化工作的组成部分。
 
-A 10-step checkpoint was produced in the original workspace on 2026-07-01, but that run did not persist a self-contained metrics file or train log. It is evidence that the loop executed, not evidence that GRPO improved the policy.
+## 4. GRPO 状态
 
-After producing a corrected SFT baseline, the next controlled experiment must use the same test samples, seed, prompt, decoding settings, and metric implementation for:
+原始工作区在 2026-07-01 生成过一个 10-step GRPO checkpoint，但该实验没有保存自包含的指标文件和完整训练日志。它只能证明训练循环成功运行，不能证明 GRPO 改善了策略。
 
-1. base model;
-2. best SFT adapter;
-3. SFT + 10-step GRPO;
-4. SFT + 50-step GRPO.
+完成坐标修复后的 SFT baseline 后，下一组控制变量实验应在相同测试样本、随机种子、提示词、解码参数和指标实现下比较：
 
-Do not increase the GRPO budget unless click hit rate, argument accuracy, or verified task success improves without unacceptable format/action regression.
+1. Qwen3.5 基座模型；
+2. 修正后的最佳 SFT adapter；
+3. SFT + 10-step GRPO；
+4. SFT + 50-step GRPO。
+
+只有当点击命中率、参数准确率或真实任务成功率得到提升，并且格式与动作类型指标没有出现不可接受的退化时，才值得继续扩大 GRPO 训练预算。
+
+## 5. 下一阶段验收标准
+
+- 固定并版本化 train/validation/test episode 列表；
+- 每次实验保存完整配置、日志、环境版本和最终指标；
+- 同时报告整体指标、分类别指标和混淆矩阵；
+- 至少复现实验三次并报告均值与波动；
+- 增加真实 Android 或模拟器闭环任务成功率；
+- 对 SFT 与 GRPO 的收益进行严格控制变量比较。

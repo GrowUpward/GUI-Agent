@@ -1,64 +1,87 @@
-# Architecture
+# 系统架构
 
-## Training path
+## 1. 训练目标
 
-The active model predicts exactly one structured action from the current screenshot, user instruction, recent action history, and candidate UI boxes.
-
-```text
-raw CAGUI episode JSON + screenshots
-                |
-                v
-       CaguiEpisodeDataset
-       - episode ordering
-       - explicit CAGUI [y,x] -> action [x,y] conversion
-       - bounded history window
-       - structured action target
-                |
-                v
-       Qwen3.5-0.8B processor
-                |
-        +-------+-------+
-        |               |
-      SFT             GRPO
-  assistant-only   grouped rollout
-      loss          structured reward
-        |               |
-        +-------+-------+
-                v
-        PEFT LoRA adapter
-```
-
-SFT and GRPO share the same prompt builder, target conversion, parser, and reward implementation. This prevents format drift between the bridge stage and policy optimization.
-
-The coordinate conversion is a tested data-boundary invariant. Internally and at the API/ADB boundary, every action coordinate is `[x, y]` in the normalized 0–1000 system. Only archived pre-audit adapters require the deployment-only `LEGACY_YX_OUTPUT=1` compatibility switch.
-
-## Reward
-
-The current reward decomposes into:
+模型根据当前屏幕截图、用户任务、近期动作历史和候选 UI 区域，只预测下一步结构化动作，不输出额外推理文本。
 
 ```text
-R = 0.2 * format + 0.3 * action + 0.5 * arguments
+CAGUI episode JSON + 截图
+              |
+              v
+     CaguiEpisodeDataset
+     - 按 episode 和 step 排序
+     - CAGUI [y,x] -> 动作 [x,y]
+     - 有界历史动作窗口
+     - 统一结构化动作标签
+              |
+              v
+     Qwen3.5-0.8B Processor
+              |
+      +-------+-------+
+      |               |
+     SFT             GRPO
+  assistant-only    分组采样
+      loss          结构化奖励
+      |               |
+      +-------+-------+
+              v
+       PEFT LoRA adapter
 ```
 
-Arguments are action-dependent:
+SFT 与 GRPO 共用动作转换、提示词构造、输出解析和奖励实现，减少两个训练阶段之间的格式漂移。
 
-- click/long press: normalized point distance and target-box containment;
-- input text: exact match plus sequence similarity shaping;
-- swipe: start point and direction;
-- press/status: strict value match;
-- wait: valid duration range.
+## 2. 数据边界
 
-This is an offline label-derived reward. A future closed-loop version should verify task completion from environment state.
+CAGUI 原始点击字段使用归一化的 `[y, x]`，模型、评测 API 和 ADB 执行端统一使用 `[x, y]`，坐标范围为 0–1000。
 
-## Deployment path
+转换只允许发生在数据加载边界，并由回归测试固定该语义。坐标修复前训练的历史 adapter 可能仍生成 `[y, x]`，部署时可临时启用 `LEGACY_YX_OUTPUT=1` 交换坐标；新模型不得启用该兼容开关。
+
+## 3. 动作空间
+
+当前模型支持以下结构化动作：
+
+- `click`：点击归一化坐标；
+- `scroll`：向上、下、左或右滚动；
+- `input_text`：输入指定文本；
+- `press_back`、`press_home`、`press_enter`：系统按键；
+- `wait`：等待；
+- `stop`、`impossible`：任务完成或无法完成。
+
+模型输出采用单个 Python 字典形式，例如：
+
+```python
+{'action': 'click', 'coordinate': [520, 310]}
+```
+
+## 4. 奖励设计
+
+当前奖励由格式、动作类型和动作参数三部分组成：
 
 ```text
-Android screenshot
-   -> FastAPI model server
-   -> Python-style action dict
-   -> normalized-to-pixel conversion
-   -> human confirmation
-   -> ADB execution
+R = 0.2 × format + 0.3 × action + 0.5 × arguments
 ```
 
-Human confirmation is part of the default design because the current model and mobile execution path are not yet reliable enough for unattended operation.
+不同动作使用不同的参数奖励：
+
+- 点击/长按：归一化坐标距离与目标框命中；
+- 文本输入：完全匹配和序列相似度；
+- 滑动：起点和方向；
+- 系统按键/任务状态：严格值匹配；
+- 等待：时长范围合法性。
+
+该奖励仍然来自离线标签。后续闭环版本应在真实或模拟环境中执行动作，并使用页面状态或任务成功检测提供奖励。
+
+## 5. 部署链路
+
+```text
+Android 截图
+   -> FastAPI 推理服务
+   -> Python 字典动作
+   -> 归一化坐标转像素坐标
+   -> 人工确认
+   -> ADB 执行
+```
+
+推理服务负责加载 Qwen3.5 基座模型和可选 LoRA adapter，并将模型输出解析为统一动作。ADB 端负责截图、发送请求、可视化预测点和执行动作。
+
+当前模型和移动端链路尚未达到无人值守要求，因此人工确认是默认安全边界。
