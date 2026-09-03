@@ -60,6 +60,67 @@
 - ADB：由 API 将归一化 `[x, y]` 映射为截图像素坐标；
 - `LEGACY_YX_OUTPUT=1` 仅用于部署旧 adapter，本实验禁止启用。
 
+### 6.1 CAGUI 为什么使用 `[y, x]`
+
+CAGUI 的 `[y, x]` 是有意采用的数据约定，不是原始标注错误。图像和张量通常按 `image[row, column]` 访问，即先指定纵向的 `y`，再指定横向的 `x`。CAGUI 因此将触摸点保存为：
+
+```text
+result_touch_yx = [y, x]
+result_lift_yx  = [y, x]
+```
+
+候选 UI 区域也使用相同顺序：
+
+```text
+ui_positions = [y, x, height, width]
+```
+
+这种表示让触摸点和 UI 框保持统一，也便于直接与图像矩阵、检测结果和数据处理代码对齐。坐标使用 0–1 归一化值，从而与截图的实际分辨率解耦。CAGUI 官方数据格式和 AgentCPM-GUI 处理代码均明确保留这一约定：
+
+- [CAGUI 数据格式](https://huggingface.co/datasets/openbmb/CAGUI)
+- [AgentCPM-GUI 数据处理代码](https://github.com/OpenBMB/AgentCPM-GUI/blob/main/eval/eval_data/process_ac.py)
+
+### 6.2 为什么必须转换成 `[x, y]`
+
+本项目的模型动作、常规几何坐标和 Android ADB 均采用 `[x, y]`。例如 ADB 点击命令为：
+
+```bash
+adb shell input tap x y
+```
+
+因此，CAGUI 数据进入模型训练管线时必须交换坐标顺序。假设原始标注为：
+
+```text
+[y, x] = [0.20, 0.80]
+```
+
+它表示屏幕高度 20%、宽度 80% 的位置，正确的模型动作坐标应为：
+
+```text
+[x, y] = [800, 200]
+```
+
+旧实现只将两个值分别乘以 1000，没有交换顺序，错误地产生了 `[200, 800]`。这会把原本位于屏幕右上区域的目标映射到左下区域。
+
+### 6.3 修正对象与影响范围
+
+本次修正的对象是“CAGUI 数据格式与模型动作接口之间的转换”，而不是修改 CAGUI 原始数据。原始 JSON 和截图保持不变，只在数据加载边界执行一次：
+
+```python
+source_yx = [y, x]
+model_xy = [round(x * 1000), round(y * 1000)]
+```
+
+旧坐标问题会影响：
+
+- 点击与长按的训练标签；
+- 目标框命中率和动作参数奖励；
+- 模型输出映射到真实 ADB 点击位置时的端到端正确性。
+
+动作类型判断和文本输入标签不依赖点击坐标，因此仍具有历史参考价值。平均坐标距离在预测和标签同时被交换时可能仍能衡量“对旧标签的拟合程度”，但不能证明真实屏幕位置正确。
+
+修正后的实现统一保证：模型标签、模型输出、评测和部署接口均使用 `[x, y]`，并通过回归测试固定这一数据边界。由于旧 adapter 已经学习了历史坐标语义，只允许在演示旧模型时使用 `LEGACY_YX_OUTPUT=1` 临时交换输出；新的可信 baseline 必须从修正后的标签重新训练。
+
 ## 7. 模型与训练策略
 
 - 基座模型：Qwen3.5-0.8B；
@@ -138,17 +199,19 @@ artifacts/train/sft-xy-smoke-bf16-20260903-095315
 | --- | ---: |
 | Episode | 全部 600 |
 | 最大训练步数 | 300 |
-| 单卡 batch size | 1 |
-| 梯度累积 | 8 |
+| GPU 数量 | 2 |
+| 每卡 batch size | 1 |
+| 梯度累积 | 4 |
 | 有效 batch size | 8 |
 | 学习率 | 1e-4 |
 | 保存间隔 | 100 |
-| 评测间隔 | 50 |
+| 评测间隔 | 100 |
 | 最大图像边长 | 448 |
+| DataLoader workers（每进程） | 2 |
 
 正式训练前必须先使用固定测试集评测未微调基座模型，从而建立真正可比较的 Base 指标。
 
-正式运行已启动：
+第一次正式运行以单卡、梯度累积 8 启动：
 
 ```text
 运行目录：artifacts/train/sft-xy-baseline-bf16-20260903-095945
@@ -163,6 +226,23 @@ batch size：1
 ```
 
 第 1 step 的 loss 为 0.9006、梯度范数为 8.00，进程状态正常。训练期间的验证和训练结束时的在线生成评测暂时各限制为 256 条样本；最终报告前仍需基于 manifest 对完整 60-episode 测试集运行独立评测，并补齐未微调 Base 结果。
+
+该运行在第 20 step 后主动终止，用作性能对照而非模型结果：平均约 39 秒/step，GPU 0 利用率多次采样仅为 24%–55%，GPU 1 空闲，且尚未到达第一个 checkpoint。已保留完整日志，不将该运行与最终 baseline 混用。
+
+随后增加 `torch.distributed.run` 双卡 DDP 支持，并执行 5-step 探针：
+
+```text
+运行目录：artifacts/train/sft-xy-ddp-speed-probe-20260903-101612
+GPU 数量：2
+每卡 batch size：1
+梯度累积：4
+有效 batch size：8
+平均速度：22.6 秒/step
+最终 train loss：0.8575
+结果：无 NaN、无 OOM，checkpoint 与根目录 adapter 均正常保存
+```
+
+双卡探针与单卡正式配置具有相同的有效 batch size，因而不改变优化步的样本规模。正式 baseline 改用 2 卡 DDP；验证与保存统一调整为每 100 step 一次，以减少短训练中的评测停顿，最终测试规模仍保持 256 条。
 
 ## 10. 评测指标
 

@@ -1,5 +1,5 @@
-#!/usr/bin/env sh
-set -eu
+#!/usr/bin/env bash
+set -euo pipefail
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "${SCRIPT_DIR}/_common.sh"
 require_env BASE_MODEL
@@ -17,7 +17,19 @@ else
   EXTRA_ARGS="${EXTRA_ARGS} --no_gradient_checkpointing"
 fi
 
-exec "${PYTHON}" -u -m gui_agent.training.sft \
+LAUNCHER=("${PYTHON}" -u)
+if [ "${NUM_GPUS:-1}" -gt 1 ]; then
+  LAUNCHER+=(
+    -m torch.distributed.run
+    --standalone
+    --nproc_per_node "${NUM_GPUS}"
+    --module gui_agent.training.sft
+  )
+else
+  LAUNCHER+=(-m gui_agent.training.sft)
+fi
+
+exec "${LAUNCHER[@]}" \
   --model_name_or_path "${BASE_MODEL}" \
   --dataset_dir "${CAGUI_ROOT}" \
   --output_dir "${OUTPUT_DIR}" \

@@ -196,7 +196,7 @@ class JsonlLoggingCallback(TrainerCallback):
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def on_log(self, args: TrainingArguments, state: Any, control: Any, logs: dict[str, Any] | None = None, **kwargs: Any) -> None:
-        if not logs:
+        if not logs or not state.is_world_process_zero:
             return
         payload = {"step": state.global_step, "epoch": state.epoch}
         payload.update(logs)
@@ -270,6 +270,7 @@ def save_run_config(args: argparse.Namespace) -> None:
     payload = vars(args).copy()
     payload["argv"] = sys.argv
     payload["cuda_visible_devices"] = os.environ.get("CUDA_VISIBLE_DEVICES")
+    payload["world_size"] = int(os.environ.get("WORLD_SIZE", "1"))
     with (output_dir / "run_config.json").open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
 
@@ -556,7 +557,10 @@ def dataset_distribution(dataset: CaguiListDataset) -> dict[str, Any]:
 
 def main() -> None:
     args = parse_args()
-    save_run_config(args)
+    rank = int(os.environ.get("RANK", "0"))
+    is_primary_process = rank == 0
+    if is_primary_process:
+        save_run_config(args)
     torch.manual_seed(args.seed)
 
     full_dataset = CaguiEpisodeDataset(args.dataset_dir, args.split, args.history_window, args.max_episodes)
@@ -566,13 +570,15 @@ def main() -> None:
         args.test_ratio,
         args.seed,
     )
-    split_manifest_path = save_split_manifest(
-        args,
-        full_dataset,
-        train_dataset,
-        raw_val_dataset,
-        raw_test_dataset,
-    )
+    split_manifest_path = Path(args.output_dir) / "split_manifest.json"
+    if is_primary_process:
+        split_manifest_path = save_split_manifest(
+            args,
+            full_dataset,
+            train_dataset,
+            raw_val_dataset,
+            raw_test_dataset,
+        )
     eval_dataset = limit_dataset(raw_val_dataset, args.max_eval_samples)
     test_dataset = limit_dataset(raw_test_dataset, args.max_test_samples)
     print(f"loaded {len(full_dataset)} CAGUI bridge SFT samples", flush=True)
@@ -633,7 +639,8 @@ def main() -> None:
     if attn_implementation:
         model_kwargs["attn_implementation"] = attn_implementation
     if args.load_in_4bit:
-        model_kwargs["device_map"] = "auto"
+        local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
+        model_kwargs["device_map"] = {"": local_rank} if local_rank >= 0 else "auto"
         model_kwargs["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
@@ -692,6 +699,7 @@ def main() -> None:
         dataloader_pin_memory=True,
         dataloader_persistent_workers=args.dataloader_num_workers > 0,
         dataloader_prefetch_factor=2 if args.dataloader_num_workers > 0 else None,
+        ddp_find_unused_parameters=False,
         disable_tqdm=False,
         logging_first_step=True,
         seed=args.seed,
@@ -741,44 +749,46 @@ def main() -> None:
     )
     trainer.train()
     eval_loss_metrics = trainer.evaluate(eval_dataset=eval_dataset) if len(eval_dataset) > 0 else {}
-    test_generate_samples = args.test_generate_samples
-    if test_generate_samples is None:
-        test_generate_samples = len(test_dataset)
-    test_metrics = (
-        evaluate_generation_metrics(
-            model,
-            processor,
-            test_dataset,
-            args,
-            sample_limit=test_generate_samples,
-            prefix="test",
+    if trainer.is_world_process_zero():
+        test_generate_samples = args.test_generate_samples
+        if test_generate_samples is None:
+            test_generate_samples = len(test_dataset)
+        test_metrics = (
+            evaluate_generation_metrics(
+                model,
+                processor,
+                test_dataset,
+                args,
+                sample_limit=test_generate_samples,
+                prefix="test",
+            )
+            if len(test_dataset) > 0
+            else {}
         )
-        if len(test_dataset) > 0
-        else {}
-    )
-    metrics = {
-        "train": dataset_distribution(train_dataset),
-        "val": dataset_distribution(eval_dataset),
-        "test": dataset_distribution(test_dataset),
-        "eval_loss": eval_loss_metrics,
-        "test_generation": test_metrics,
-    }
-    metrics_path = Path(args.output_dir) / "metrics.json"
-    with metrics_path.open("w", encoding="utf-8") as f:
-        json.dump(metrics, f, ensure_ascii=False, indent=2, sort_keys=True)
-    print(
-        json.dumps(
-            {
-                "metrics_file": str(metrics_path),
-                "test_generation": test_metrics,
-            },
-            ensure_ascii=False,
-        ),
-        flush=True,
-    )
+        metrics = {
+            "train": dataset_distribution(train_dataset),
+            "val": dataset_distribution(eval_dataset),
+            "test": dataset_distribution(test_dataset),
+            "eval_loss": eval_loss_metrics,
+            "test_generation": test_metrics,
+        }
+        metrics_path = Path(args.output_dir) / "metrics.json"
+        with metrics_path.open("w", encoding="utf-8") as f:
+            json.dump(metrics, f, ensure_ascii=False, indent=2, sort_keys=True)
+        print(
+            json.dumps(
+                {
+                    "metrics_file": str(metrics_path),
+                    "test_generation": test_metrics,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
     trainer.save_model(args.output_dir)
-    processor.save_pretrained(args.output_dir)
-    print(f"done. CAGUI SFT adapter saved to {args.output_dir}", flush=True)
+    if trainer.is_world_process_zero():
+        processor.save_pretrained(args.output_dir)
+        print(f"done. CAGUI SFT adapter saved to {args.output_dir}", flush=True)
 
 
 if __name__ == "__main__":
