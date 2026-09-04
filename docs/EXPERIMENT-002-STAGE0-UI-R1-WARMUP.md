@@ -65,9 +65,9 @@ y = round(((y1 + y2) / 2) / image_height * 1000)
 
 ```bash
 cd /data/data1/zhaozhiqing/project/GUI-Agent
-source /data/data1/zhaozhiqing/project/UI-R1/.venv/bin/activate  # 按服务器实际环境调整
 
-export BASE_MODEL=/data/data1/zhaozhiqing/project/UI-R1/ckpt/Qwen/Qwen3.5-0.8B
+export PYTHON=/data/data0/zhaozhiqing/anaconda3/envs/python3.10/bin/python
+export BASE_MODEL=/data/data0/zhaozhiqing/.cache/hub/models--Qwen--Qwen3.5-0.8B/snapshots/2fc06364715b967f1860aea9cf38778875588b17
 export UI_R1_WARMUP_JSON=/data/data1/zhaozhiqing/project/UI-R1/dataset/train_ground.json
 export UI_R1_WARMUP_IMAGES=/data/data1/zhaozhiqing/project/UI-R1/dataset/train_imgs
 export NUM_GPUS=2
@@ -88,4 +88,53 @@ bash scripts/train_stage0_ui_r1.sh
 
 ## 6. 结果
 
-待训练完成后补充运行目录、耗时、loss 曲线和 adapter 校验结果。
+### 6.1 工程校验
+
+- 代码提交：`fca051b feat: add UI-R1 Stage 0 SFT warmup`
+- 完整测试：10 项通过；新增文件 Ruff 检查通过。
+- 真实数据 dry-run：`raw_samples=136`、`usable_samples=110`。
+- 2-step 双卡 smoke test：成功，34.46 秒，无 NaN/OOM。
+- Smoke 目录：
+
+```text
+/data/data1/zhaozhiqing/project/GUI-Agent/artifacts/train/stage0-ui-r1-smoke-20260904
+```
+
+### 6.2 正式训练
+
+正式运行目录：
+
+```text
+/data/data1/zhaozhiqing/project/GUI-Agent/artifacts/train/stage0-ui-r1-warmup-20260904-2330
+```
+
+结果：
+
+| 指标 | 数值 |
+|---|---:|
+| Epoch | 3 |
+| 优化 step | 42/42 |
+| 训练耗时 | 909.9 秒（约 15 分 10 秒） |
+| 每秒训练样本 | 0.363 |
+| 每秒优化 step | 0.046 |
+| 平均 train loss | 0.7929 |
+| 首步 loss | 0.8480 |
+| 末步 loss | 0.7621 |
+| 最低单步 loss | 0.6608 |
+
+训练退出码为 0，无 NaN、OOM、数据读取错误或 DDP 同步错误。最终 adapter 为约 2.56 MB；`safetensors` 中 24 个张量全部通过有限值校验。由于 `save_total_limit=2`，保留 `checkpoint-40`、`checkpoint-42` 及根目录最终 adapter。
+
+训练结束时 PyTorch 输出“未显式调用 `destroy_process_group()`”的资源清理警告，但进程正常退出、GPU 显存已释放，不影响本次训练产物。
+
+### 6.3 结论边界
+
+本实验只证明 Stage 0 数据转换、双卡训练和 adapter 保存链路有效，不能仅凭训练 loss 宣称 CAGUI 能力提升。
+
+下一步必须在相同的 CAGUI Train/Validation、训练预算和随机种子下比较：
+
+```text
+E1: Qwen3.5 Base -> CAGUI SFT
+E2: Qwen3.5 Base -> UI-R1 Stage 0 adapter -> CAGUI SFT
+```
+
+只有 E2 在 CAGUI Validation 的动作、点击和参数指标上优于 E1，才能将 Stage 0 作为最终方案保留。
