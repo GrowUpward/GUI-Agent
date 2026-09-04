@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from torch.utils.data import Dataset
 from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
+from torch.utils.data import Dataset
 from transformers import (
     AutoModelForImageTextToText,
     AutoProcessor,
@@ -32,14 +32,7 @@ from transformers import (
 from transformers.modeling_flash_attention_utils import _flash_attention_forward
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
-try:
-    from transformers.integrations import flash_attention as transformers_flash_attention
-except Exception:  # pragma: no cover - flash-attn is optional unless requested.
-    transformers_flash_attention = None
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
-
-# Keep SFT and GRPO on one shared data/prompt/reward implementation.
+from gui_agent.data.ui_r1_warmup import UiR1WarmupDataset
 from gui_agent.training.grpo import (
     CaguiEpisodeDataset,
     build_prompt,
@@ -49,6 +42,13 @@ from gui_agent.training.grpo import (
     reward_completion_detail,
     target_to_sft_dict,
 )
+
+try:
+    from transformers.integrations import flash_attention as transformers_flash_attention
+except Exception:  # pragma: no cover - flash-attn is optional unless requested.
+    transformers_flash_attention = None
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 DEFAULT_BASE_MODEL = os.environ.get("BASE_MODEL", "Qwen/Qwen3.5-0.8B")
 DEFAULT_DATASET_DIR = Path(os.environ.get("CAGUI_ROOT", REPO_ROOT / "data" / "CAGUI"))
@@ -217,7 +217,10 @@ def find_subsequence(sequence: torch.Tensor, pattern: torch.Tensor) -> int | Non
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name_or_path", default=DEFAULT_BASE_MODEL)
+    parser.add_argument("--dataset_format", choices=("cagui", "ui_r1_warmup"), default="cagui")
     parser.add_argument("--dataset_dir", default=str(DEFAULT_DATASET_DIR))
+    parser.add_argument("--data_file", default="", help="UI-R1 warm-up JSON file when --dataset_format=ui_r1_warmup.")
+    parser.add_argument("--image_dir", default="", help="UI-R1 warm-up image directory when --dataset_format=ui_r1_warmup.")
     parser.add_argument("--output_dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--init_adapter", default=str(DEFAULT_INIT_ADAPTER), help="Existing SFT adapter to continue from. Use empty string to initialize a new LoRA.")
     parser.add_argument("--split", default="domestic")
@@ -441,6 +444,13 @@ def save_fixed_split_manifest(args: argparse.Namespace, manifest: dict[str, Any]
     return manifest_path
 
 
+def save_ui_r1_manifest(args: argparse.Namespace, dataset: UiR1WarmupDataset) -> Path:
+    manifest_path = Path(args.output_dir) / "dataset_manifest.json"
+    with manifest_path.open("w", encoding="utf-8") as file:
+        json.dump(dataset.summary, file, ensure_ascii=False, indent=2, sort_keys=True)
+    return manifest_path
+
+
 def limit_dataset(dataset: CaguiListDataset, limit: int) -> CaguiListDataset:
     if limit <= 0 or len(dataset) <= limit:
         return dataset
@@ -652,36 +662,49 @@ def main() -> None:
         save_run_config(args)
     torch.manual_seed(args.seed)
 
-    full_dataset = CaguiEpisodeDataset(args.dataset_dir, args.split, args.history_window, args.max_episodes)
     fixed_manifest: dict[str, Any] | None = None
-    if args.split_manifest:
-        train_dataset, raw_val_dataset, raw_test_dataset, fixed_manifest = split_from_manifest(
-            full_dataset,
-            args.split_manifest,
-            args.split,
-        )
+    if args.dataset_format == "ui_r1_warmup":
+        if not args.data_file or not args.image_dir:
+            raise ValueError("--data_file and --image_dir are required for --dataset_format=ui_r1_warmup")
+        if args.split_manifest:
+            raise ValueError("--split_manifest is only valid for --dataset_format=cagui")
+        full_dataset = UiR1WarmupDataset(args.data_file, args.image_dir)
+        train_dataset = CaguiListDataset(list(full_dataset.samples))
+        raw_val_dataset = CaguiListDataset([])
+        raw_test_dataset = CaguiListDataset([])
+        split_manifest_path = Path(args.output_dir) / "dataset_manifest.json"
+        if is_primary_process:
+            split_manifest_path = save_ui_r1_manifest(args, full_dataset)
     else:
-        train_dataset, raw_val_dataset, raw_test_dataset = split_by_episode(
-            full_dataset,
-            args.val_ratio,
-            args.test_ratio,
-            args.seed,
-        )
-    split_manifest_path = Path(args.output_dir) / "split_manifest.json"
-    if is_primary_process:
-        if fixed_manifest is not None:
-            split_manifest_path = save_fixed_split_manifest(args, fixed_manifest)
-        else:
-            split_manifest_path = save_split_manifest(
-                args,
+        full_dataset = CaguiEpisodeDataset(args.dataset_dir, args.split, args.history_window, args.max_episodes)
+        if args.split_manifest:
+            train_dataset, raw_val_dataset, raw_test_dataset, fixed_manifest = split_from_manifest(
                 full_dataset,
-                train_dataset,
-                raw_val_dataset,
-                raw_test_dataset,
+                args.split_manifest,
+                args.split,
             )
+        else:
+            train_dataset, raw_val_dataset, raw_test_dataset = split_by_episode(
+                full_dataset,
+                args.val_ratio,
+                args.test_ratio,
+                args.seed,
+            )
+        split_manifest_path = Path(args.output_dir) / "split_manifest.json"
+        if is_primary_process:
+            if fixed_manifest is not None:
+                split_manifest_path = save_fixed_split_manifest(args, fixed_manifest)
+            else:
+                split_manifest_path = save_split_manifest(
+                    args,
+                    full_dataset,
+                    train_dataset,
+                    raw_val_dataset,
+                    raw_test_dataset,
+                )
     eval_dataset = limit_dataset(raw_val_dataset, args.max_eval_samples)
     test_dataset = limit_dataset(raw_test_dataset, args.max_test_samples)
-    print(f"loaded {len(full_dataset)} CAGUI bridge SFT samples", flush=True)
+    print(f"loaded {len(full_dataset)} {args.dataset_format} SFT samples", flush=True)
     print(
         json.dumps(
             {
@@ -810,6 +833,7 @@ def main() -> None:
             {
                 "train_config": {
                     "output_dir": args.output_dir,
+                    "dataset_format": args.dataset_format,
                     "init_adapter": args.init_adapter,
                     "max_steps": args.max_steps,
                     "num_train_epochs": args.num_train_epochs,
@@ -888,7 +912,7 @@ def main() -> None:
     trainer.save_model(args.output_dir)
     if trainer.is_world_process_zero():
         processor.save_pretrained(args.output_dir)
-        print(f"done. CAGUI SFT adapter saved to {args.output_dir}", flush=True)
+        print(f"done. {args.dataset_format} SFT adapter saved to {args.output_dir}", flush=True)
 
 
 if __name__ == "__main__":
