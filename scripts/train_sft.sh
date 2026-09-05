@@ -38,6 +38,7 @@ exec "${LAUNCHER[@]}" \
   --split "${SPLIT:-domestic}" \
   --max_episodes "${MAX_EPISODES:-0}" \
   --history_window "${HISTORY_WINDOW:-4}" \
+  --trajectory_window_steps "${TRAJECTORY_WINDOW_STEPS:-1}" \
   --max_ui_boxes "${MAX_UI_BOXES:-30}" \
   --max_image_side "${MAX_IMAGE_SIDE:-448}" \
   --val_ratio "${VAL_RATIO:-0.1}" \

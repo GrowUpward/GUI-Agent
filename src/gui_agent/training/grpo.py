@@ -650,12 +650,12 @@ def prepare_batch(
     return prompts, images, targets
 
 
-def build_prompt(processor: Any, sample: GuiSample, max_ui_boxes: int) -> str:
+def build_user_text(sample: GuiSample, max_ui_boxes: int) -> str:
     history_lines = []
     for idx, item in enumerate(sample.history):
         history_lines.append(f"step {idx}: {format_action_for_history(item)}")
     history = "\n".join(history_lines) if history_lines else "无"
-    user_text = (
+    return (
         f"In this UI screenshot, I want to perform the command: {sample.instruction}\n"
         "Return only one Python-style dict. For click actions, use exactly:\n"
         "{'action': 'click', 'coordinate': [x, y]}\n"
@@ -669,6 +669,10 @@ def build_prompt(processor: Any, sample: GuiSample, max_ui_boxes: int) -> str:
         f"Candidate UI boxes [y,x,h,w]: {compact_boxes(sample.ui_positions, max_ui_boxes)}\n"
         f"Previous actions:\n{history}"
     )
+
+
+def build_prompt(processor: Any, sample: GuiSample, max_ui_boxes: int) -> str:
+    user_text = build_user_text(sample, max_ui_boxes)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {

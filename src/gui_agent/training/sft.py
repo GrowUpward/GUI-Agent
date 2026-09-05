@@ -35,7 +35,9 @@ from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 from gui_agent.data.ui_r1_warmup import UiR1WarmupDataset
 from gui_agent.training.grpo import (
     CaguiEpisodeDataset,
+    SYSTEM_PROMPT,
     build_prompt,
+    build_user_text,
     load_resized_image,
     normalize_pred_action,
     parse_action_text,
@@ -181,6 +183,102 @@ class CaguiSftCollator:
         return batch
 
 
+@dataclass(frozen=True)
+class CaguiTrajectoryWindow:
+    episode_id: str
+    steps: tuple[Any, ...]
+
+
+class CaguiTrajectoryDataset(Dataset):
+    """Non-overlapping, episode-local windows that preserve every train step once."""
+
+    def __init__(self, step_dataset: "CaguiListDataset", window_steps: int):
+        if window_steps < 2:
+            raise ValueError("trajectory window must contain at least two steps")
+        groups: dict[str, list[Any]] = collections.defaultdict(list)
+        for sample in step_dataset.samples:
+            groups[str(sample.episode_id)].append(sample)
+
+        self.windows: list[CaguiTrajectoryWindow] = []
+        for episode_id in sorted(groups):
+            steps = sorted(groups[episode_id], key=lambda sample: int(sample.step_id))
+            for start in range(0, len(steps), window_steps):
+                chunk = tuple(steps[start : start + window_steps])
+                self.windows.append(CaguiTrajectoryWindow(episode_id=episode_id, steps=chunk))
+
+        if sum(len(window.steps) for window in self.windows) != len(step_dataset):
+            raise RuntimeError("trajectory window construction lost training steps")
+
+    def __len__(self) -> int:
+        return len(self.windows)
+
+    def __getitem__(self, idx: int) -> CaguiTrajectoryWindow:
+        return self.windows[idx]
+
+
+@dataclass
+class CaguiTrajectorySftCollator:
+    processor: Any
+    max_ui_boxes: int
+    max_image_side: int
+
+    def __call__(self, windows: list[Any]) -> dict[str, torch.Tensor]:
+        full_texts: list[str] = []
+        images = []
+        answer_patterns: list[list[torch.Tensor]] = []
+        eos_token = self.processor.tokenizer.eos_token
+        if not eos_token:
+            raise ValueError("The tokenizer must define an EOS token for trajectory SFT")
+
+        for item in windows:
+            window = (
+                item
+                if isinstance(item, CaguiTrajectoryWindow)
+                else CaguiTrajectoryWindow(episode_id=str(item.episode_id), steps=(item,))
+            )
+            messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+            window_answers: list[torch.Tensor] = []
+            for sample in window.steps:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image"},
+                            {"type": "text", "text": build_user_text(sample, self.max_ui_boxes)},
+                        ],
+                    }
+                )
+                answer = target_to_sft_dict(sample.target)
+                messages.append({"role": "assistant", "content": answer})
+                window_answers.append(
+                    self.processor.tokenizer(
+                        answer + eos_token,
+                        add_special_tokens=False,
+                        return_tensors="pt",
+                    )["input_ids"][0]
+                )
+                images.append(load_resized_image(sample.image_path, self.max_image_side))
+            full_texts.append(
+                self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+            )
+            answer_patterns.append(window_answers)
+
+        batch = self.processor(text=full_texts, images=images, padding=True, return_tensors="pt")
+        labels = torch.full_like(batch["input_ids"], -100)
+        for row_idx, patterns in enumerate(answer_patterns):
+            cursor = 0
+            for pattern in patterns:
+                start = find_subsequence_from(batch["input_ids"][row_idx], pattern, cursor)
+                if start is None:
+                    raise ValueError(f"Could not find trajectory answer tokens in sample {row_idx}")
+                end = start + pattern.numel()
+                labels[row_idx, start:end] = batch["input_ids"][row_idx, start:end]
+                cursor = end
+        labels[batch["attention_mask"] == 0] = -100
+        batch["labels"] = labels
+        return batch
+
+
 class CaguiListDataset(Dataset):
     def __init__(self, samples: list[Any]):
         self.samples = samples
@@ -216,6 +314,16 @@ def find_subsequence(sequence: torch.Tensor, pattern: torch.Tensor) -> int | Non
     return None
 
 
+def find_subsequence_from(sequence: torch.Tensor, pattern: torch.Tensor, start_at: int) -> int | None:
+    if pattern.numel() == 0 or sequence.numel() < pattern.numel():
+        return None
+    max_start = sequence.numel() - pattern.numel()
+    for start in range(max(0, start_at), max_start + 1):
+        if torch.equal(sequence[start : start + pattern.numel()], pattern):
+            return start
+    return None
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name_or_path", default=DEFAULT_BASE_MODEL)
@@ -228,6 +336,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", default="domestic")
     parser.add_argument("--max_episodes", type=int, default=0)
     parser.add_argument("--history_window", type=int, default=4)
+    parser.add_argument(
+        "--trajectory_window_steps",
+        type=int,
+        default=1,
+        help="Use non-overlapping multi-turn trajectory windows when greater than one.",
+    )
     parser.add_argument("--max_ui_boxes", type=int, default=30)
     parser.add_argument("--max_image_side", type=int, default=672)
     parser.add_argument("--seed", type=int, default=42)
@@ -759,6 +873,14 @@ def main() -> None:
                 )
     eval_dataset = limit_dataset(raw_val_dataset, args.max_eval_samples)
     test_dataset = limit_dataset(raw_test_dataset, args.max_test_samples)
+    if args.trajectory_window_steps > 1:
+        if args.dataset_format != "cagui":
+            raise ValueError("--trajectory_window_steps > 1 is only supported for CAGUI")
+        training_dataset: Dataset = CaguiTrajectoryDataset(train_dataset, args.trajectory_window_steps)
+        training_collator: Any = None
+    else:
+        training_dataset = train_dataset
+        training_collator = None
     print(f"loaded {len(full_dataset)} {args.dataset_format} SFT samples", flush=True)
     print(
         json.dumps(
@@ -772,30 +894,37 @@ def main() -> None:
                     "val_ratio": args.val_ratio,
                     "test_ratio": args.test_ratio,
                     "split_manifest": str(split_manifest_path),
+                    "trajectory_window_steps": args.trajectory_window_steps,
+                    "training_examples": len(training_dataset),
+                    "supervised_train_actions": len(train_dataset),
                 }
             },
             ensure_ascii=False,
         ),
         flush=True,
     )
-    preview_count = min(max(0, args.preview_samples), len(train_dataset))
+    preview_count = min(max(0, args.preview_samples), len(training_dataset))
     for idx in range(preview_count):
-        sample = train_dataset[idx]
-        print(
-            json.dumps(
-                {
-                    "preview_idx": idx,
-                    "episode_id": sample.episode_id,
-                    "step_id": sample.step_id,
-                    "instruction": sample.instruction,
-                    "target": target_to_sft_dict(sample.target),
-                    "history_len": len(sample.history),
-                    "image_path": sample.image_path,
-                },
-                ensure_ascii=False,
-            ),
-            flush=True,
-        )
+        item = training_dataset[idx]
+        if isinstance(item, CaguiTrajectoryWindow):
+            preview = {
+                "preview_idx": idx,
+                "episode_id": item.episode_id,
+                "trajectory_steps": [sample.step_id for sample in item.steps],
+                "targets": [target_to_sft_dict(sample.target) for sample in item.steps],
+                "image_paths": [sample.image_path for sample in item.steps],
+            }
+        else:
+            preview = {
+                "preview_idx": idx,
+                "episode_id": item.episode_id,
+                "step_id": item.step_id,
+                "instruction": item.instruction,
+                "target": target_to_sft_dict(item.target),
+                "history_len": len(item.history),
+                "image_path": item.image_path,
+            }
+        print(json.dumps(preview, ensure_ascii=False), flush=True)
     if args.dry_run:
         return
 
@@ -898,6 +1027,7 @@ def main() -> None:
                     "learning_rate": args.learning_rate,
                     "max_image_side": args.max_image_side,
                     "history_window": args.history_window,
+                    "trajectory_window_steps": args.trajectory_window_steps,
                     "max_ui_boxes": args.max_ui_boxes,
                     "load_in_4bit": args.load_in_4bit,
                     "gradient_checkpointing": args.gradient_checkpointing,
@@ -914,16 +1044,25 @@ def main() -> None:
         flush=True,
     )
 
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset if len(eval_dataset) > 0 else None,
-        data_collator=CaguiSftCollator(
+    if args.trajectory_window_steps > 1:
+        training_collator = CaguiTrajectorySftCollator(
             processor=processor,
             max_ui_boxes=args.max_ui_boxes,
             max_image_side=args.max_image_side,
-        ),
+        )
+    else:
+        training_collator = CaguiSftCollator(
+            processor=processor,
+            max_ui_boxes=args.max_ui_boxes,
+            max_image_side=args.max_image_side,
+        )
+
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=training_dataset,
+        eval_dataset=eval_dataset if len(eval_dataset) > 0 else None,
+        data_collator=training_collator,
         callbacks=[JsonlLoggingCallback(args.output_dir)],
     )
     trainer.train()
