@@ -16,6 +16,7 @@ if [ "${GRADIENT_CHECKPOINTING:-1}" = 1 ]; then
 else
   EXTRA_ARGS="${EXTRA_ARGS} --no_gradient_checkpointing"
 fi
+[ "${SKIP_FINAL_EVAL:-0}" = 1 ] && EXTRA_ARGS="${EXTRA_ARGS} --skip_final_eval"
 
 LAUNCHER=("${PYTHON}" -u)
 if [ "${NUM_GPUS:-1}" -gt 1 ]; then
@@ -46,6 +47,7 @@ exec "${LAUNCHER[@]}" \
   --max_test_samples "${MAX_TEST_SAMPLES:-256}" \
   --eval_steps "${EVAL_STEPS:-10}" \
   --eval_max_new_tokens "${EVAL_MAX_NEW_TOKENS:-48}" \
+  --test_generate_samples "${TEST_GENERATE_SAMPLES:-0}" \
   --max_steps "${MAX_STEPS:-300}" \
   --num_train_epochs "${NUM_TRAIN_EPOCHS:-1}" \
   --per_device_train_batch_size "${BATCH_SIZE:-1}" \

@@ -85,8 +85,12 @@ export MAX_TEST_SAMPLES=256
 export EVAL_STEPS=100
 export SAVE_STEPS=100
 export DATALOADER_NUM_WORKERS=2
+export SKIP_FINAL_EVAL=1
+export TEST_GENERATE_SAMPLES=0
 bash scripts/train_sft.sh
 ```
+
+`SKIP_FINAL_EVAL=1` 复用 step 300 已产生的 Validation 指标，避免训练结束后重复执行同一批 loss 评测；`TEST_GENERATE_SAMPLES=0` 禁止训练进程读取 Test 生成结果。完整 Validation 生成比较由独立评测进程完成。
 
 ## 6. Validation 生成评测
 

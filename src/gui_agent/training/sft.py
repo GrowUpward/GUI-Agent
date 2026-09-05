@@ -240,6 +240,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_test_samples", type=int, default=256)
     parser.add_argument("--eval_steps", type=int, default=100)
     parser.add_argument("--test_generate_samples", type=int, default=None)
+    parser.add_argument(
+        "--skip_final_eval",
+        action="store_true",
+        help="Reuse the latest in-training eval metrics instead of repeating trainer.evaluate() after training.",
+    )
     parser.add_argument("--eval_max_new_tokens", type=int, default=48)
     parser.add_argument("--preview_samples", type=int, default=5, help="Print this many samples before training.")
 
@@ -654,6 +659,14 @@ def dataset_distribution(dataset: CaguiListDataset) -> dict[str, Any]:
     }
 
 
+def latest_logged_eval_metrics(log_history: list[dict[str, Any]]) -> dict[str, Any]:
+    for entry in reversed(log_history):
+        metrics = {key: value for key, value in entry.items() if key.startswith("eval_")}
+        if metrics:
+            return metrics
+    return {}
+
+
 def main() -> None:
     args = parse_args()
     rank = int(os.environ.get("RANK", "0"))
@@ -872,7 +885,12 @@ def main() -> None:
         callbacks=[JsonlLoggingCallback(args.output_dir)],
     )
     trainer.train()
-    eval_loss_metrics = trainer.evaluate(eval_dataset=eval_dataset) if len(eval_dataset) > 0 else {}
+    if len(eval_dataset) == 0:
+        eval_loss_metrics = {}
+    elif args.skip_final_eval:
+        eval_loss_metrics = latest_logged_eval_metrics(trainer.state.log_history)
+    else:
+        eval_loss_metrics = trainer.evaluate(eval_dataset=eval_dataset)
     if trainer.is_world_process_zero():
         test_generate_samples = args.test_generate_samples
         if test_generate_samples is None:
