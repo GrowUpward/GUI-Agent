@@ -41,6 +41,7 @@ from gui_agent.training.grpo import (
     parse_action_text,
     reward_completion_detail,
     target_to_sft_dict,
+    truncate_at_balanced_dict,
 )
 
 try:
@@ -541,7 +542,11 @@ def generate_completion(model: Any, processor: Any, prompt: str, image: Any, max
             pad_token_id=processor.tokenizer.pad_token_id or processor.tokenizer.eos_token_id,
         )
     completion_ids = generated[0][input_len:]
-    return processor.tokenizer.decode(completion_ids, skip_special_tokens=True).strip()
+    raw_completion = processor.tokenizer.decode(completion_ids, skip_special_tokens=True).strip()
+    # Match deployment semantics: one model call produces exactly one executable
+    # action.  Models may continue with another chat turn after a valid dict;
+    # that suffix must not turn the first executable action into a parse failure.
+    return truncate_at_balanced_dict(raw_completion)
 
 
 def evaluate_generation_metrics(

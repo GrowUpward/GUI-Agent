@@ -32,3 +32,20 @@ def test_wrong_action_is_rejected() -> None:
 def test_truncate_generation_after_first_dict() -> None:
     text = "prefix {'action': 'stop'} trailing {'action': 'click'}"
     assert truncate_at_balanced_dict(text) == "{'action': 'stop'}"
+
+
+def test_truncate_repeated_assistant_turn_to_first_action() -> None:
+    text = (
+        "{'action': 'click', 'coordinate': [512, 612]}\n"
+        "assistant\n<think>\n\n</think>\n\n"
+        "{'action': 'click', 'coordinate': [512, 630]}"
+    )
+    action_text = truncate_at_balanced_dict(text)
+    parsed, ok = parse_action_text(action_text)
+    assert ok
+    assert parsed == {"action": "click", "coordinate": [512, 612]}
+
+
+def test_truncate_keeps_brace_inside_quoted_text() -> None:
+    text = "{'action': 'input_text', 'text': '集合 {A}'} trailing"
+    assert truncate_at_balanced_dict(text) == "{'action': 'input_text', 'text': '集合 {A}'}"
