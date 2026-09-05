@@ -19,6 +19,7 @@ exec "${PYTHON}" -u -m gui_agent.evaluation.sft \
   --output_file "${OUTPUT_FILE}" \
   --label "${EVAL_LABEL}" \
   --split "${SPLIT:-domestic}" \
+  --partition "${EVAL_PARTITION:-test}" \
   --history_window "${HISTORY_WINDOW:-4}" \
   --max_ui_boxes "${MAX_UI_BOXES:-30}" \
   --max_image_side "${MAX_IMAGE_SIDE:-448}" \

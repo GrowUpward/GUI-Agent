@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate a base model or SFT adapter on a fixed CAGUI test split."""
+"""Evaluate a base model or SFT adapter on a fixed CAGUI partition."""
 
 from __future__ import annotations
 
@@ -38,11 +38,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_file", required=True)
     parser.add_argument("--label", required=True)
     parser.add_argument("--split", default="domestic")
+    parser.add_argument("--partition", choices=("train", "validation", "test"), default="test")
     parser.add_argument("--history_window", type=int, default=4)
     parser.add_argument("--max_ui_boxes", type=int, default=30)
     parser.add_argument("--max_image_side", type=int, default=448)
     parser.add_argument("--max_new_tokens", type=int, default=48)
-    parser.add_argument("--max_samples", type=int, default=0, help="0 evaluates the complete fixed test split.")
+    parser.add_argument("--max_samples", type=int, default=0, help="0 evaluates the complete selected partition.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--attn_implementation", default="sdpa")
     parser.add_argument("--bf16", action="store_true")
@@ -112,14 +113,25 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     full_dataset = CaguiEpisodeDataset(args.dataset_dir, args.split, args.history_window, 0)
-    _, _, test_dataset, manifest = split_from_manifest(full_dataset, manifest_path, args.split)
-    sample_limit = len(test_dataset) if args.max_samples <= 0 else min(args.max_samples, len(test_dataset))
+    train_dataset, validation_dataset, test_dataset, manifest = split_from_manifest(
+        full_dataset, manifest_path, args.split
+    )
+    partitions = {
+        "train": train_dataset,
+        "validation": validation_dataset,
+        "test": test_dataset,
+    }
+    evaluation_dataset = partitions[args.partition]
+    sample_limit = (
+        len(evaluation_dataset) if args.max_samples <= 0 else min(args.max_samples, len(evaluation_dataset))
+    )
     metadata = {
         "label": args.label,
         "base_model": str(Path(args.model_name_or_path).expanduser().resolve()),
         "adapter_path": str(Path(args.adapter_path).expanduser().resolve()) if args.adapter_path else None,
         "dataset_dir": str(Path(args.dataset_dir).expanduser().resolve()),
         "dataset_split": args.split,
+        "partition": args.partition,
         "split_manifest": str(manifest_path),
         "split_manifest_sha256": sha256_file(manifest_path),
         "git_commit": git_commit(),
@@ -127,7 +139,7 @@ def main() -> None:
         "max_image_side": args.max_image_side,
         "max_ui_boxes": args.max_ui_boxes,
         "max_new_tokens": args.max_new_tokens,
-        "test": dataset_distribution(test_dataset),
+        "partition_distribution": dataset_distribution(evaluation_dataset),
         "evaluated_samples": sample_limit,
         "manifest_version": manifest["manifest_version"],
     }
@@ -146,16 +158,16 @@ def main() -> None:
     generation_metrics = evaluate_generation_metrics(
         model,
         processor,
-        test_dataset,
+        evaluation_dataset,
         metric_args,
         sample_limit=sample_limit,
-        prefix="test",
+        prefix=args.partition,
     )
     elapsed_seconds = round(time.monotonic() - started, 3)
     result = {
         "metadata": metadata,
         "elapsed_seconds": elapsed_seconds,
-        "test_generation": generation_metrics,
+        f"{args.partition}_generation": generation_metrics,
     }
     output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps({"output_file": str(output_path), "elapsed_seconds": elapsed_seconds}, ensure_ascii=False), flush=True)
