@@ -12,6 +12,7 @@
 - ScreenSpotV2：`ScreenSpotV2/screenspotv2_test.json`，1272 条
 - 图像最长边：448
 - 解码：greedy，最多 48 个新 token，显式 EOS
+- 并行：每套数据拆成 8 个互斥分片，每张 GPU 运行 4 个进程；最终按原始样本顺序合并
 
 ## 指标口径
 

@@ -23,6 +23,8 @@ exec "${PYTHON}" -u -m gui_agent.evaluation.screenspot \
   --max_image_side "${MAX_IMAGE_SIDE:-448}" \
   --max_new_tokens "${EVAL_MAX_NEW_TOKENS:-48}" \
   --max_samples "${MAX_TEST_SAMPLES:-0}" \
+  --num_shards "${NUM_SHARDS:-1}" \
+  --shard_index "${SHARD_INDEX:-0}" \
   --seed "${SEED:-42}" \
   --attn_implementation "${ATTN_IMPLEMENTATION:-sdpa}" \
   "${EXTRA_ARGS[@]}" \

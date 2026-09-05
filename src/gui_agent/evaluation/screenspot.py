@@ -31,6 +31,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_image_side", type=int, default=448)
     parser.add_argument("--max_new_tokens", type=int, default=48)
     parser.add_argument("--max_samples", type=int, default=0)
+    parser.add_argument("--num_shards", type=int, default=1)
+    parser.add_argument("--shard_index", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--attn_implementation", default="sdpa")
     parser.add_argument("--bf16", action="store_true")
@@ -230,12 +232,15 @@ def main() -> None:
     args = parse_args()
     if args.batch_size <= 0:
         raise ValueError("--batch_size must be positive")
+    if args.num_shards <= 0 or not 0 <= args.shard_index < args.num_shards:
+        raise ValueError("Require num_shards > 0 and 0 <= shard_index < num_shards")
     torch.manual_seed(args.seed)
     data_json = Path(args.data_json).expanduser().resolve()
     image_dir = Path(args.image_dir).expanduser().resolve()
     output_file = Path(args.output_file).expanduser().resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    samples = load_samples(data_json, image_dir, args.max_samples)
+    all_samples = load_samples(data_json, image_dir, args.max_samples)
+    samples = all_samples[args.shard_index :: args.num_shards]
     metadata = {
         "label": args.label,
         "base_model": str(Path(args.model_name_or_path).expanduser().resolve()),
@@ -243,7 +248,10 @@ def main() -> None:
         "data_json": str(data_json),
         "data_json_sha256": sha256_file(data_json),
         "image_dir": str(image_dir),
+        "dataset_samples": len(all_samples),
         "evaluated_samples": len(samples),
+        "num_shards": args.num_shards,
+        "shard_index": args.shard_index,
         "batch_size": args.batch_size,
         "max_image_side": args.max_image_side,
         "max_new_tokens": args.max_new_tokens,
