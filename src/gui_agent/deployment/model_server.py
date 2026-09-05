@@ -162,6 +162,8 @@ class ModelRuntime:
             do_sample=False,
             max_new_tokens=self.max_new_tokens,
             use_cache=True,
+            eos_token_id=self.processor.tokenizer.eos_token_id,
+            pad_token_id=self.processor.tokenizer.pad_token_id or self.processor.tokenizer.eos_token_id,
         )
         prompt_length = inputs["input_ids"].shape[1]
         response = self.processor.batch_decode(

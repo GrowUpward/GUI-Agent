@@ -155,19 +155,20 @@ class CaguiSftCollator:
         full_texts: list[str] = []
         images = []
         answer_texts: list[str] = []
+        eos_token = self.processor.tokenizer.eos_token
+        if not eos_token:
+            raise ValueError("The tokenizer must define an EOS token for SFT")
 
         for sample in samples:
             prompt = build_prompt(self.processor, sample, self.max_ui_boxes)
             answer = target_to_sft_dict(sample.target)
-            full_texts.append(prompt + answer)
+            full_texts.append(prompt + answer + eos_token)
             answer_texts.append(answer)
             images.append(load_resized_image(sample.image_path, self.max_image_side))
 
         batch = self.processor(text=full_texts, images=images, padding=True, return_tensors="pt")
         labels = batch["input_ids"].clone()
-        pad_token_id = self.processor.tokenizer.pad_token_id
-        if pad_token_id is not None:
-            labels[labels == pad_token_id] = -100
+        labels[batch["attention_mask"] == 0] = -100
 
         for row_idx, answer_text in enumerate(answer_texts):
             answer_ids = self.processor.tokenizer(answer_text, add_special_tokens=False, return_tensors="pt")["input_ids"][0]
@@ -529,7 +530,20 @@ def point_hits_target_box(pred_point: list[float] | None, gold_point: list[float
     return dist is not None and dist <= 50.0
 
 
-def generate_completion(model: Any, processor: Any, prompt: str, image: Any, max_new_tokens: int) -> str:
+@dataclass(frozen=True)
+class GeneratedCompletion:
+    raw_text: str
+    action_text: str
+    eos_terminated: bool
+
+
+def generate_completion(
+    model: Any,
+    processor: Any,
+    prompt: str,
+    image: Any,
+    max_new_tokens: int,
+) -> GeneratedCompletion:
     device = next(model.parameters()).device
     inputs = processor(text=[prompt], images=[image], return_tensors="pt", padding=True)
     inputs = {k: v.to(device) if torch.is_tensor(v) else v for k, v in inputs.items()}
@@ -540,13 +554,21 @@ def generate_completion(model: Any, processor: Any, prompt: str, image: Any, max
             do_sample=False,
             max_new_tokens=max_new_tokens,
             pad_token_id=processor.tokenizer.pad_token_id or processor.tokenizer.eos_token_id,
+            eos_token_id=processor.tokenizer.eos_token_id,
         )
     completion_ids = generated[0][input_len:]
     raw_completion = processor.tokenizer.decode(completion_ids, skip_special_tokens=True).strip()
-    # Match deployment semantics: one model call produces exactly one executable
-    # action.  Models may continue with another chat turn after a valid dict;
-    # that suffix must not turn the first executable action into a parse failure.
-    return truncate_at_balanced_dict(raw_completion)
+    eos_token_id = processor.tokenizer.eos_token_id
+    eos_terminated = bool(
+        eos_token_id is not None
+        and completion_ids.numel() > 0
+        and int(completion_ids[-1].item()) == int(eos_token_id)
+    )
+    return GeneratedCompletion(
+        raw_text=raw_completion,
+        action_text=truncate_at_balanced_dict(raw_completion),
+        eos_terminated=eos_terminated,
+    )
 
 
 def evaluate_generation_metrics(
@@ -563,6 +585,9 @@ def evaluate_generation_metrics(
 
     model.eval()
     parse_ok = 0
+    raw_strict_ok = 0
+    eos_terminated = 0
+    extra_content = 0
     action_ok = 0
     args_ok = 0
     reward_sum = 0.0
@@ -580,12 +605,19 @@ def evaluate_generation_metrics(
         sample = dataset[idx]
         prompt = build_prompt(processor, sample, args.max_ui_boxes)
         image = load_resized_image(sample.image_path, args.max_image_side)
-        completion = generate_completion(model, processor, prompt, image, args.eval_max_new_tokens)
+        generated = generate_completion(model, processor, prompt, image, args.eval_max_new_tokens)
+        raw_completion = generated.raw_text
+        completion = generated.action_text
         parsed, ok = parse_action_text(completion)
+        raw_parsed, raw_ok = parse_action_text(raw_completion)
+        is_raw_strict = raw_completion == completion and raw_ok and raw_parsed is not None
         normalized = normalize_pred_action(parsed) if ok and parsed is not None else None
         reward, detail = reward_completion_detail(completion, sample.target, sample.ui_positions)
         reward_sum += reward
         parse_ok += int(ok and parsed is not None)
+        raw_strict_ok += int(is_raw_strict)
+        eos_terminated += int(generated.eos_terminated)
+        extra_content += int(raw_completion != completion)
         args_ok += int(float(detail.get("args_reward", 0.0)) >= 1.0)
 
         gold_label = action_label_from_target(sample.target)
@@ -610,14 +642,16 @@ def evaluate_generation_metrics(
             pred_text = str((normalized or {}).get("TYPE", ""))
             text_ok += int(pred_text == str(sample.target.get("text", "")))
 
-        if len(examples) < 8 and (pred_label != gold_label or not ok):
+        if len(examples) < 8 and (pred_label != gold_label or not ok or not is_raw_strict):
             examples.append(
                 {
                     "idx": idx,
                     "episode_id": sample.episode_id,
                     "step_id": sample.step_id,
                     "target": target_to_sft_dict(sample.target),
+                    "raw_completion": raw_completion,
                     "completion": completion,
+                    "eos_terminated": generated.eos_terminated,
                     "reward": round(reward, 4),
                     "detail": detail,
                 }
@@ -635,6 +669,9 @@ def evaluate_generation_metrics(
         f"{prefix}_generate_samples": total,
         "parse_success_rate": round(parse_ok / total, 4),
         "format_valid_rate": round(parse_ok / total, 4),
+        "raw_strict_format_rate": round(raw_strict_ok / total, 4),
+        "eos_termination_rate": round(eos_terminated / total, 4),
+        "extra_content_rate": round(extra_content / total, 4),
         "action_type_accuracy": round(action_ok / total, 4),
         "argument_accuracy": round(args_ok / total, 4),
         "reward_mean": round(reward_sum / total, 4),
