@@ -43,14 +43,18 @@ CAGUI 原始点击字段使用归一化的 `[y, x]`，模型、评测 API 和 AD
 - `click`：点击归一化坐标；
 - `scroll`：向上、下、左或右滚动；
 - `input_text`：输入指定文本；
-- `press_back`、`press_home`、`press_enter`：系统按键；
-- `wait`：等待；
-- `stop`、`impossible`：任务完成或无法完成。
+- `press`：系统按键，按键参数为 `BACK`、`HOME` 或 `ENTER`；
+- `wait`：等待固定或标注时长；
+- `stop`：终止任务；CAGUI 的 impossible 源标注在训练边界归并为 stop。
+
+CAGUI 的 `NO_ACTION` 映射为固定 500ms wait。当前精简动作空间不单列 long press，少量 `LONG_POINT` 源标注降级为 click，并保留点击位置监督。
 
 模型输出采用单个 Python 字典形式，例如：
 
 ```python
 {'action': 'click', 'coordinate': [520, 310]}
+{'action': 'press', 'key': 'HOME'}
+{'action': 'wait', 'duration': 500}
 ```
 
 ## 4. 奖励设计

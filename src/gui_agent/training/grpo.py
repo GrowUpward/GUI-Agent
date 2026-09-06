@@ -44,12 +44,14 @@ DEFAULT_OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", REPO_ROOT / "artifacts" /
 
 SYSTEM_PROMPT = (
     "You are a GUI assistant. Predict the next GUI action from the screenshot "
-    "and the user instruction. Return only one Python-style dict. For click "
+    "and the user instruction. Return only one JSON/Python-style dict. For click "
     "actions, use exactly {'action': 'click', 'coordinate': [x, y]}. "
     "Coordinates are integers in [0, 1000]. Use "
     "{'action': 'scroll', 'direction': 'up|down|left|right'} for scrolling, "
-    "{'action': 'input_text', 'text': '...'} for typing, and "
-    "{'action': 'press_back'|'press_home'|'press_enter'|'stop'} for key or stop actions. "
+    "{'action': 'input_text', 'text': '...'} for typing, "
+    "{'action': 'press', 'key': 'BACK'|'HOME'|'ENTER'} for key actions, "
+    "{'action': 'wait', 'duration': 500} for waiting, "
+    "and {'action': 'stop'} when the task should terminate. "
     "Do not include reasoning or extra text. "
 )
 
@@ -223,20 +225,22 @@ def target_from_step(step: dict[str, Any]) -> dict[str, Any]:
         target["kind"] = "PRESS"
         target["press"] = "ENTER"
         return target
-    if action_type == 10:
+    if action_type in {10, 11}:
         target["kind"] = "STATUS"
         target["status"] = "finish"
-        return target
-    if action_type == 11:
-        target["kind"] = "STATUS"
-        target["status"] = "impossible"
+        if action_type == 11:
+            target["source_status"] = "impossible"
         return target
 
-    if action_type == 4:
+    if action_type in {0, 4}:
         target["kind"] = "POINT"
         target["point"] = normalize_yx_to_xy(lift_yx if lift_yx != [-1.0, -1.0] else touch_yx)
+        if action_type == 0:
+            # The reduced training action space has no long-press action.
+            # Preserve its location supervision by folding LONG_POINT into click.
+            target["source_action"] = "long_press"
         dist = euclidean_distance(touch_yx, lift_yx) if all(v >= 0 for v in touch_yx + lift_yx) else 0.0
-        if dist > 0.04:
+        if action_type == 4 and dist > 0.04:
             dy = lift_yx[0] - touch_yx[0]
             dx = lift_yx[1] - touch_yx[1]
             if abs(dy) >= abs(dx):
@@ -247,8 +251,9 @@ def target_from_step(step: dict[str, Any]) -> dict[str, Any]:
                 target["to"] = "right" if dx > 0 else "left"
         return target
 
-    if action_type == 0 and duration is not None:
+    if action_type == 1:
         target["kind"] = "WAIT"
+        target["duration"] = 500
         return target
 
     target["kind"] = "UNKNOWN"
@@ -294,12 +299,12 @@ def target_to_sft_dict(target: dict[str, Any]) -> str:
         text = str(target.get("text", "")).replace("\\", "\\\\").replace("'", "\\'")
         return f"{{'action': 'input_text', 'text': '{text}'}}"
     if kind == "PRESS":
-        return f"{{'action': 'press_{str(target.get('press', '')).lower()}'}}"
+        key = str(target.get("press", "")).upper()
+        return f"{{'action': 'press', 'key': '{key}'}}"
     if kind == "STATUS":
-        status = str(target.get("status", "finish"))
-        return "{'action': 'stop'}" if status == "finish" else "{'action': 'impossible'}"
+        return "{'action': 'stop'}"
     if kind == "WAIT":
-        return "{'action': 'wait'}"
+        return "{'action': 'wait', 'duration': 500}"
     return "{'action': 'unknown'}"
 
 
@@ -465,6 +470,8 @@ def normalize_pred_action(obj: dict[str, Any]) -> dict[str, Any]:
         out["STATUS"] = "impossible"
     elif action in {"wait", "no_action"}:
         out["duration"] = obj.get("duration", 500)
+    elif action in {"press", "press_key"}:
+        out["PRESS"] = str(obj.get("key") or obj.get("button") or obj.get("PRESS") or "").upper()
     elif action in {"press_back", "back"}:
         out["PRESS"] = "BACK"
     elif action in {"press_home", "home"}:

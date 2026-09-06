@@ -587,7 +587,7 @@ def action_label_from_target(target: dict[str, Any]) -> str:
     if kind == "TYPE":
         return "input_text"
     if kind == "PRESS":
-        return f"press_{str(target.get('press', '')).lower()}"
+        return "press"
     if kind == "STATUS":
         status = str(target.get("status", "finish"))
         return "stop" if status == "finish" else "impossible"
@@ -602,7 +602,7 @@ def action_label_from_pred(obj: dict[str, Any] | None) -> str:
     if "TYPE" in obj:
         return "input_text"
     if "PRESS" in obj:
-        return f"press_{str(obj.get('PRESS', '')).lower()}"
+        return "press"
     if "STATUS" in obj:
         status = str(obj.get("STATUS", ""))
         return "stop" if status == "finish" else "impossible"
