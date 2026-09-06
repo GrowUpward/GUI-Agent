@@ -112,7 +112,7 @@ def official_step_match(sample: Any, normalized: dict[str, Any] | None) -> dict[
     exact_match = False
     parameter_detail: dict[str, Any] = {}
 
-    if type_match and gold_label == "click":
+    if type_match and gold_label in {"click", "long_press"}:
         pred_point = extract_point(normalized)
         gold_point = sample.target.get("point")
         exact_match, rule, distance = official_click_match(pred_point, gold_point, sample.ui_positions)
@@ -121,6 +121,16 @@ def official_step_match(sample: Any, normalized: dict[str, Any] | None) -> dict[
             "normalized_distance": round(distance, 6) if distance is not None else None,
             "strict_bbox_hit": point_hits_target_box(pred_point, gold_point, sample.ui_positions),
         }
+        if gold_label == "long_press":
+            pred_duration = (normalized or {}).get("duration")
+            gold_duration = sample.target.get("duration")
+            parameter_detail.update(
+                {
+                    "pred_duration": pred_duration,
+                    "gold_duration": gold_duration,
+                    "strict_duration_match": pred_duration == gold_duration,
+                }
+            )
     elif type_match and gold_label == "scroll":
         pred_direction = str((normalized or {}).get("to", ""))
         gold_direction = str(sample.target.get("to", ""))

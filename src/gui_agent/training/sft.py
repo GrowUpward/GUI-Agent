@@ -582,6 +582,8 @@ def action_label_from_target(target: dict[str, Any]) -> str:
     kind = str(target.get("kind", "UNKNOWN"))
     if kind == "POINT":
         return "click"
+    if kind == "LONG_POINT":
+        return "long_press"
     if kind == "SWIPE":
         return "scroll"
     if kind == "TYPE":
@@ -607,7 +609,9 @@ def action_label_from_pred(obj: dict[str, Any] | None) -> str:
         status = str(obj.get("STATUS", ""))
         return "stop" if status == "finish" else "impossible"
     if "POINT" in obj:
-        return "scroll" if "to" in obj else "click"
+        if "to" in obj:
+            return "scroll"
+        return "long_press" if "duration" in obj else "click"
     if "duration" in obj:
         return "wait"
     return str(obj.get("action", "unknown")).lower()

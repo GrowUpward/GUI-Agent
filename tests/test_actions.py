@@ -33,7 +33,7 @@ def test_training_protocol_uses_duration_wait_action() -> None:
     assert normalize_pred_action({"action": "wait", "duration": 500}) == {"duration": 500}
 
 
-def test_no_action_is_wait_and_long_point_is_folded_into_click() -> None:
+def test_no_action_is_wait_and_long_point_preserves_duration() -> None:
     wait_target = target_from_step({"result_action_type": 1, "duration": 1000})
     assert wait_target["kind"] == "WAIT"
     assert wait_target["duration"] == 500
@@ -46,10 +46,27 @@ def test_no_action_is_wait_and_long_point_is_folded_into_click() -> None:
             "result_lift_yx": [0.4, 0.3],
         }
     )
-    assert long_point_target["kind"] == "POINT"
+    assert long_point_target["kind"] == "LONG_POINT"
     assert long_point_target["point"] == [300, 400]
-    assert long_point_target["source_action"] == "long_press"
-    assert target_to_sft_dict(long_point_target) == "{'action': 'click', 'coordinate': [300, 400]}"
+    assert long_point_target["duration"] == 1000
+    assert target_to_sft_dict(long_point_target) == (
+        "{'action': 'long_press', 'coordinate': [300, 400], 'duration': 1000}"
+    )
+    assert normalize_pred_action(
+        {"action": "long_press", "coordinate": [300, 400], "duration": 1000}
+    ) == {"POINT": [300, 400], "duration": 1000}
+    assert action_label_from_target(long_point_target) == "long_press"
+    assert action_label_from_pred({"POINT": [300, 400], "duration": 1000}) == "long_press"
+
+
+def test_long_point_reward_requires_matching_duration() -> None:
+    target = {"kind": "LONG_POINT", "point": [300, 400], "duration": 1000}
+    exact = reward_completion('{"POINT":[300,400],"duration":1000}', target, [])
+    wrong_duration = reward_completion('{"POINT":[300,400],"duration":500}', target, [])
+    click = reward_completion("{'action':'click','coordinate':[300,400]}", target, [])
+    assert exact == 1.0
+    assert wrong_duration < exact
+    assert click == -1.0
 
 
 def test_impossible_source_label_is_folded_into_stop() -> None:
@@ -61,6 +78,7 @@ def test_impossible_source_label_is_folded_into_stop() -> None:
 
 
 def test_system_prompt_declares_the_complete_training_action_space() -> None:
+    assert "{'action': 'long_press', 'coordinate': [x, y], 'duration': 1000}" in SYSTEM_PROMPT
     assert "{'action': 'press', 'key': 'BACK'|'HOME'|'ENTER'}" in SYSTEM_PROMPT
     assert "{'action': 'wait', 'duration': 500}" in SYSTEM_PROMPT
     assert "impossible" not in SYSTEM_PROMPT

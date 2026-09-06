@@ -49,6 +49,7 @@ SYSTEM_PROMPT = (
     "Coordinates are integers in [0, 1000]. Use "
     "{'action': 'scroll', 'direction': 'up|down|left|right'} for scrolling, "
     "{'action': 'input_text', 'text': '...'} for typing, "
+    "{'action': 'long_press', 'coordinate': [x, y], 'duration': 1000} for a long press, "
     "{'action': 'press', 'key': 'BACK'|'HOME'|'ENTER'} for key actions, "
     "{'action': 'wait', 'duration': 500} for waiting, "
     "and {'action': 'stop'} when the task should terminate. "
@@ -232,15 +233,17 @@ def target_from_step(step: dict[str, Any]) -> dict[str, Any]:
             target["source_status"] = "impossible"
         return target
 
-    if action_type in {0, 4}:
+    if action_type == 0:
+        target["kind"] = "LONG_POINT"
+        target["point"] = normalize_yx_to_xy(touch_yx)
+        target["duration"] = int(float(duration or 1000))
+        return target
+
+    if action_type == 4:
         target["kind"] = "POINT"
         target["point"] = normalize_yx_to_xy(lift_yx if lift_yx != [-1.0, -1.0] else touch_yx)
-        if action_type == 0:
-            # The reduced training action space has no long-press action.
-            # Preserve its location supervision by folding LONG_POINT into click.
-            target["source_action"] = "long_press"
         dist = euclidean_distance(touch_yx, lift_yx) if all(v >= 0 for v in touch_yx + lift_yx) else 0.0
-        if action_type == 4 and dist > 0.04:
+        if dist > 0.04:
             dy = lift_yx[0] - touch_yx[0]
             dx = lift_yx[1] - touch_yx[1]
             if abs(dy) >= abs(dx):
@@ -271,6 +274,10 @@ def target_to_json(target: dict[str, Any]) -> str:
     if kind == "WAIT":
         duration = int(target.get("duration") or 500)
         return json.dumps({"duration": duration}, ensure_ascii=False, separators=(",", ":"))
+    if kind == "LONG_POINT":
+        point = target.get("point", [0, 0])
+        duration = int(target.get("duration") or 1000)
+        return json.dumps({"POINT": point, "duration": duration}, ensure_ascii=False, separators=(",", ":"))
     if kind == "POINT":
         point = target.get("point", [0, 0])
         payload: dict[str, Any] = {"POINT": point}
@@ -293,6 +300,14 @@ def target_to_sft_dict(target: dict[str, Any]) -> str:
     if kind == "POINT":
         point = target.get("point", [0, 0])
         return f"{{'action': 'click', 'coordinate': [{int(point[0])}, {int(point[1])}]}}"
+    if kind == "LONG_POINT":
+        point = target.get("point", [0, 0])
+        duration = int(target.get("duration") or 1000)
+        return (
+            "{'action': 'long_press', "
+            f"'coordinate': [{int(point[0])}, {int(point[1])}], "
+            f"'duration': {duration}}}"
+        )
     if kind == "SWIPE":
         return f"{{'action': 'scroll', 'direction': '{target.get('to', 'down')}'}}"
     if kind == "TYPE":
@@ -578,13 +593,18 @@ def reward_completion_detail(completion: str, target: dict[str, Any], boxes: lis
         duration = obj.get("duration")
         action_reward = 1.0 if "duration" in obj and "POINT" not in obj and "TYPE" not in obj else -0.3
         args_reward = 1.0 if isinstance(duration, (int, float)) and 150 <= float(duration) <= 5000 else 0.0
-    elif kind in {"POINT", "SWIPE"}:
+    elif kind in {"POINT", "LONG_POINT", "SWIPE"}:
         point = obj.get("POINT")
         if isinstance(point, list) and len(point) == 2:
             point = [float(point[0]), float(point[1])]
         else:
             point = None
-        action_reward = 1.0 if "POINT" in obj else -0.3
+        if kind == "LONG_POINT":
+            action_reward = 1.0 if "POINT" in obj and "duration" in obj and "to" not in obj else -0.3
+        elif kind == "SWIPE":
+            action_reward = 1.0 if "POINT" in obj and "to" in obj and "duration" not in obj else -0.3
+        else:
+            action_reward = 1.0 if "POINT" in obj and "duration" not in obj and "to" not in obj else -0.3
         args_reward = point_reward(point, target.get("point"), boxes)
         if kind == "SWIPE":
             pred_to = obj.get("to")
@@ -594,9 +614,15 @@ def reward_completion_detail(completion: str, target: dict[str, Any], boxes: lis
             duration = obj.get("duration")
             if "duration" in obj:
                 args_reward = 0.5 * args_reward + 0.5 * (1.0 if isinstance(duration, (int, float)) and 150 <= float(duration) <= 5000 else 0.0)
-        if "duration" in obj and kind == "POINT":
-            dur = obj.get("duration")
-            args_reward = 0.7 * args_reward + 0.3 * (1.0 if isinstance(dur, (int, float)) and 150 <= float(dur) <= 5000 else 0.0)
+        if kind == "LONG_POINT":
+            pred_duration = obj.get("duration")
+            gold_duration = target.get("duration")
+            duration_match = (
+                isinstance(pred_duration, (int, float))
+                and isinstance(gold_duration, (int, float))
+                and float(pred_duration) == float(gold_duration)
+            )
+            args_reward = 0.7 * args_reward + 0.3 * float(duration_match)
     else:
         action_reward = -0.5
         args_reward = 0.0
