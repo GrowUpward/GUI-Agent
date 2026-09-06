@@ -10,7 +10,10 @@ require_env E2_ADAPTER
 require_env OUTPUT_DIR
 
 NUM_SHARDS=${NUM_SHARDS:-4}
-EVAL_BATCH_SIZE=${EVAL_BATCH_SIZE:-8}
+EVAL_BATCH_SIZE=${EVAL_BATCH_SIZE:-1}
+EXTRA_ARGS=()
+[ "${BF16:-1}" = 1 ] && EXTRA_ARGS+=(--bf16)
+[ "${LOAD_IN_4BIT:-1}" = 1 ] && EXTRA_ARGS+=(--load_in_4bit)
 mkdir -p "${OUTPUT_DIR}/e1" "${OUTPUT_DIR}/e2"
 : > "${OUTPUT_DIR}/pids.txt"
 pids=()
@@ -35,7 +38,7 @@ launch() {
     --shard_index "${shard}" \
     --max_image_side "${MAX_IMAGE_SIDE:-448}" \
     --max_new_tokens "${EVAL_MAX_NEW_TOKENS:-48}" \
-    --bf16 > "${OUTPUT_DIR}/${label}/shard${shard}.log" 2>&1 < /dev/null &
+    "${EXTRA_ARGS[@]}" > "${OUTPUT_DIR}/${label}/shard${shard}.log" 2>&1 < /dev/null &
   pids+=("$!")
   echo "$! ${label} ${shard} ${gpu}" >> "${OUTPUT_DIR}/pids.txt"
 }

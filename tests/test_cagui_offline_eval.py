@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from gui_agent.evaluation.cagui_offline import official_click_match, official_step_match, summarize_records
 
 
@@ -7,6 +9,17 @@ def test_official_click_uses_expanded_target_box() -> None:
     matched, rule, _ = official_click_match([615, 500], [500, 500], [[0.4, 0.4, 0.2, 0.2]])
     assert matched is True
     assert rule == "expanded_bbox"
+
+
+def test_official_click_falls_back_to_distance_after_box_miss() -> None:
+    matched, rule, distance = official_click_match(
+        [600, 500],
+        [500, 500],
+        [[0.45, 0.45, 0.1, 0.1]],
+    )
+    assert matched is True
+    assert rule == "distance_0.14_fallback"
+    assert distance == pytest.approx(0.1)
 
 
 def test_official_type_match_uses_substring_but_preserves_strict_diagnostic() -> None:

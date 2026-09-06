@@ -96,9 +96,11 @@ def official_click_match(
     distance = math.dist(pred_xy, gold_xy)
     candidate_boxes = [enlarge_box(box) for box in ui_positions]
     target_boxes = [box for box in candidate_boxes if xy_in_yxhw(gold_xy, box)]
-    if target_boxes:
-        return any(xy_in_yxhw(pred_xy, box) for box in target_boxes), "expanded_bbox", distance
-    return distance <= 0.14, "distance_0.14", distance
+    if target_boxes and any(xy_in_yxhw(pred_xy, box) for box in target_boxes):
+        return True, "expanded_bbox", distance
+    # AgentCPM falls back to the normalized 0.14 distance threshold both when
+    # the gold point has no candidate box and when the prediction misses it.
+    return distance <= 0.14, "distance_0.14_fallback", distance
 
 
 def official_step_match(sample: Any, normalized: dict[str, Any] | None) -> dict[str, Any]:
@@ -298,6 +300,9 @@ def main() -> None:
         "batch_size": args.batch_size,
         "max_image_side": args.max_image_side,
         "max_new_tokens": args.max_new_tokens,
+        "bf16": args.bf16,
+        "load_in_4bit": args.load_in_4bit,
+        "attn_implementation": args.attn_implementation,
         "git_commit": git_commit(),
         "protocol": "AgentCPM-compatible TM/EM plus strict diagnostics",
     }
